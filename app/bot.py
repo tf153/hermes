@@ -11,10 +11,11 @@ from telegram.ext import (
     filters,
 )
 
-from app import store
+from app import store, stt
 from app.config import settings
 from app.hermes_runner import HermesError
 from app.pipeline import build_trip, create_trip
+from app.stt import TranscriptionError
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ WELCOME = (
     "- \"My parents are coming, they can't climb stairs - temples + easy sights\"\n"
     "- \"Solo slow traveller, just cafes and quiet mornings\"\n\n"
     "Same Goa, a completely different trip for each traveller.\n\n"
+    "You can also just send a voice note - tell me about your trip out loud!\n\n"
     "Follow-up messages refine it (\"make it senior-friendly\"). "
     "Use /reset to start over."
 )
@@ -46,11 +48,51 @@ async def cmd_reset(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
     text = (update.message.text or "").strip()
     if not text:
         return
+    await _start_trip(update, context, text)
 
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Voice note -> Wispr Flow transcript -> same trip flow as text."""
+    chat_id = update.effective_chat.id
+    if chat_id in _active_chats:
+        await update.message.reply_text(
+            "I'm still working on your previous request - one moment!"
+        )
+        return
+
+    media = update.message.voice or update.message.audio
+    if media is None:
+        return
+    if media.duration and media.duration > 350:
+        await update.message.reply_text(
+            "That voice note is a bit long - keep it under ~5 minutes please!"
+        )
+        return
+
+    note = await update.message.reply_text("Listening to your voice note…")
+    try:
+        tg_file = await media.get_file()
+        audio = bytes(await tg_file.download_as_bytearray())
+        text = await stt.transcribe(audio)
+    except TranscriptionError as exc:
+        logger.warning("transcription failed for chat %s: %s", chat_id, exc)
+        await note.edit_text(
+            "Sorry, I couldn't make out that voice note. "
+            "Try again, or type your trip instead."
+        )
+        return
+
+    await note.edit_text(f"Heard you!\n\n\u201c{text}\u201d")
+    await _start_trip(update, context, text)
+
+
+async def _start_trip(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    chat_id = update.effective_chat.id
     if chat_id in _active_chats:
         await update.message.reply_text(
             "I'm still working on your previous request - one moment!"
@@ -115,5 +157,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("reset", cmd_reset))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
+    application.add_handler(
+        MessageHandler(filters.VOICE | filters.AUDIO, handle_voice)
     )
     return application

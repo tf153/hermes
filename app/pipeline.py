@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from app import linkup, store, video
+from app import linkup, photos, store, video
 from app.config import settings
 from app.hermes_runner import run_hermes_json
 
@@ -286,6 +286,10 @@ async def _build_trip_inner(
 
     if not resolved_stops:
         raise RuntimeError("no valid stops resolved from the plan")
+
+    # Fill in a real photo per chosen stop (SerpAPI Google Maps, Wikipedia
+    # fallback), so the video is photo-led instead of map-only.
+    await photos.attach_photos(resolved_stops, "Goa, India")
 
     plan["stops"] = resolved_stops
     logger.info("plan: %s (%d stops)", plan.get("title"), len(resolved_stops))

@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     )
 
     telegram_bot_token: str = ""
-    linkup_api_key: str = ""
+    linkup_api_key: str = ""  # place data: coords, ratings, review quotes
+    serpapi_api_key: str = ""  # used only to fetch a real photo per place
+    wisprflow_api_key: str = ""  # voice note -> text
     public_base_url: str = "http://localhost:8000"
     trip_ttl_hours: int = 24
 
