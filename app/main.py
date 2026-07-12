@@ -95,7 +95,6 @@ async def health() -> dict:
         "bot_configured": bool(settings.telegram_bot_token),
         "linkup_configured": bool(settings.linkup_api_key),
         "serpapi_configured": bool(settings.serpapi_api_key),
-        "wisprflow_configured": bool(settings.wisprflow_api_key),
     }
 
 
