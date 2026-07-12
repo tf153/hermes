@@ -22,15 +22,15 @@ logger = logging.getLogger(__name__)
 _active_chats: set[int] = set()
 
 WELCOME = (
-    "Namaste! I'm your Goa travel companion.\n\n"
-    "Tell me who's travelling and what you love, and I'll design a Goa trip "
-    "just for you and send you a short map video of it.\n\n"
+    "Namaste! I'm your travel companion.\n\n"
+    "Tell me where you're going, who's travelling and what you love, and I'll "
+    "design a trip just for you and send you a short map video of it.\n\n"
     "Try things like:\n"
     "- \"2 days in Goa, I'm a sunset chaser and love photography\"\n"
-    "- \"Family trip with 2 young kids, nothing too tiring\"\n"
-    "- \"My parents are coming, they can't climb stairs - temples + easy sights\"\n"
-    "- \"Solo slow traveller, just cafes and quiet mornings\"\n\n"
-    "Same Goa, a completely different trip for each traveller.\n\n"
+    "- \"Family trip to Jaipur with 2 young kids, nothing too tiring\"\n"
+    "- \"Parents coming to Varanasi, no stairs - temples + easy sights\"\n"
+    "- \"Solo slow traveller in Pondicherry, just cafes and quiet mornings\"\n\n"
+    "Same place, a completely different trip for each traveller.\n\n"
     "Follow-up messages refine it (\"make it senior-friendly\"). "
     "Use /reset to start over."
 )
@@ -68,7 +68,7 @@ async def _start_trip(
     # into the video player on its own when the render finishes.
     handle = create_trip(chat_id)
     await update.message.reply_text(
-        f"On it! Watch your Goa trip come together live:\n\n{handle.url}\n\n"
+        f"On it! Watch your trip come together live:\n\n{handle.url}\n\n"
         f"I'll also send the video here when it's ready (~2-3 min)."
     )
 

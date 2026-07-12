@@ -1,0 +1,98 @@
+==============================================================================
+HERMES VOICE-TO-TEXT (STT) — WISPR STATUS & PROVIDER RANKING
+Generated: 2026-07-12
+==============================================================================
+
+------------------------------------------------------------------------------
+1. IS WISPR ALREADY IN THE WORKFLOW?
+------------------------------------------------------------------------------
+YES. Wispr Flow is already fully wired in as the speech-to-text layer for
+Telegram voice notes. Nothing needs to be coded to "add" it — only the API
+key is missing.
+
+  - app/stt.py       : converts voice note -> 16kHz mono WAV (ffmpeg) and
+                       calls the Wispr Flow REST API
+                       (https://platform-api.wisprflow.ai/api/v1/dash/api)
+  - app/bot.py       : handle_voice() downloads the voice/audio message,
+                       calls stt.transcribe(), then feeds the transcript into
+                       the same trip pipeline as a typed message
+                       (handler: filters.VOICE | filters.AUDIO)
+  - app/config.py    : reads wisprflow_api_key
+  - Behavior         : if WISPRFLOW_API_KEY is empty, transcription raises and
+                       the bot gracefully asks the user to type instead.
+                       /health reports "wisprflow_configured": false.
+
+  TO ENABLE: set in .env  ->  WISPRFLOW_API_KEY=fl-xxxxxxxx  then restart.
+
+------------------------------------------------------------------------------
+2. WHERE TO GET THE WISPR KEY
+------------------------------------------------------------------------------
+  - The Wispr Flow API is NOT public. Access is gated behind enterprise
+    approval / partnership.
+  - Request access: email enterprise@wisprflow.ai (or the partnership form).
+  - Once approved: log in at https://platform.wisprflow.ai
+    -> API Keys -> Create new key. Key (format "fl-...") is shown ONCE.
+  - Docs: https://api-docs.wisprflow.ai/quickstart
+
+------------------------------------------------------------------------------
+3. TIMING & FREE VERSION (myth-busting)
+------------------------------------------------------------------------------
+  - NO fixed 24-hour turnaround. Approval is manual/human. Their docs say API
+    partnerships are currently PAUSED and they "may not respond right away."
+    Realistically: days to weeks, or no response.
+  - NO free tier for the API. (The Wispr Flow desktop/mobile APP has consumer
+    plans, but that is the end-user product, not this backend API.)
+  - NOTE: the "24 hours" in .env is unrelated — TRIP_TTL_HOURS just controls
+    how long a generated trip video stays live at its public link.
+
+------------------------------------------------------------------------------
+4. STT PROVIDER RANKING (per rubric)
+------------------------------------------------------------------------------
+Rubric criteria (each scored /5, higher = better):
+  A. Key availability  — how fast/easy to get a working key (no approval)
+  B. Cost              — free tier or cheap usage
+  C. Latency/speed     — transcription turnaround
+  D. Quality/accuracy  — transcript accuracy, multilingual
+  E. Integration effort— how little code change vs current app/stt.py
+                          (lower effort = higher score)
+
+                        A    B    C    D    E   | TOTAL /25 | RANK
+  --------------------------------------------------------------------
+  Groq (Whisper v3)     5    5    5    4    4   |    23     |  #1
+  OpenAI gpt-4o-transc. 5    3    4    5    4   |    21     |  #2
+  Deepgram              5    4    5    4    3   |    21     |  #2 (tie)
+  Local faster-whisper  5    5    2    4    2   |    18     |  #4
+  Wispr Flow            1    1    4    5    5   |    16     |  #5
+
+  --------------------------------------------------------------------
+  #1  GROQ (whisper-large-v3)
+      + Instant free API key at console.groq.com
+      + Very fast, generous free limits, OpenAI-compatible API
+      - Free limits can throttle at high volume
+      Best "get voice working today" choice.
+
+  #2  OPENAI (gpt-4o-transcribe / whisper-1)
+      + Instant key, top accuracy, 100+ languages
+      - Paid (~$0.006/min), no free tier
+
+  #2  DEEPGRAM (tie)
+      + Instant key with free credit, fast, streaming
+      - Slightly more setup than an OpenAI-compatible call
+
+  #4  LOCAL faster-whisper
+      + Fully free, no key, data stays on your server
+      - Needs CPU/GPU on the box; slower; more ops/setup
+
+  #5  WISPR FLOW (current integration)
+      + Highest "human-style" cleanup (auto-edits, filler removal, names),
+        already coded and integrated (zero code change)
+      - Not public, no free tier, uncertain/paused approval -> can't get a
+        key on demand
+
+------------------------------------------------------------------------------
+5. RECOMMENDATION
+------------------------------------------------------------------------------
+  - If you need voice working NOW: add a fallback in app/stt.py that uses Groq
+    (or OpenAI) Whisper when WISPRFLOW_API_KEY is unset. Small, isolated change.
+  - Keep Wispr as the preferred provider once/if approved — the code is ready.
+==============================================================================

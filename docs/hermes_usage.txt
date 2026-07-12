@@ -1,0 +1,81 @@
+==============================================================================
+HERMES USAGE — SKILLS & MEMORY (HACKATHON SUBMISSION WRITEUP)
+Generated: 2026-07-12
+==============================================================================
+
+SUMMARY (the honest, one-line version)
+------------------------------------------------------------------------------
+We use the Hermes Agent CLI as the reasoning/generation engine behind a
+manager-led multi-agent trip planner. We did NOT use Hermes' native "skills"
+feature, and memory is implemented at the application layer (not Hermes'
+native memory). Each Hermes call is a stateless one-shot; we re-inject the
+remembered context into every prompt ourselves.
+
+------------------------------------------------------------------------------
+1. MEMORY
+------------------------------------------------------------------------------
+Type: Application-level memory (NOT Hermes-native memory).
+
+What we store:
+  - Per-chat context in data/sessions/{chat_id}.json via app/store.py:
+      * spec         : the merged, structured traveler spec (personas, days,
+                       destination, group, pace, accessibility, interests)
+      * history      : the last 10 raw user messages (MAX_HISTORY = 10)
+      * last_trip_id : the most recent trip built for this chat
+      * updated_at   : timestamp
+
+How it is used:
+  - On each new message we load the session and pass the stored spec into the
+    Hermes prompt (INTAKE / MANAGER prompts take "stored_spec").
+  - This lets follow-up messages REFINE an existing trip
+    (e.g. "make it senior-friendly", "add a day") instead of starting over.
+  - /reset deletes the session file (reset_session) to clear memory.
+
+Key honesty note:
+  - Every `hermes -z` invocation is STATELESS. Hermes does not persist anything
+    between calls. Continuity comes entirely from our app re-injecting the
+    stored spec/history into each prompt. So the correct claim is:
+    "we built a persistent per-conversation memory layer around stateless
+    Hermes one-shot calls" — NOT "we used Hermes' built-in memory."
+
+Files: app/store.py, app/config.py (sessions_dir), app/pipeline.py (load/save)
+
+------------------------------------------------------------------------------
+2. SKILLS
+------------------------------------------------------------------------------
+Hermes-native skills used: NONE.
+
+We do not define or invoke any Hermes "skill". All agent behavior is driven by
+plain prompt templates in app/agents.py, executed through the Hermes CLI:
+
+    hermes -z <prompt> --ignore-rules -t search
+
+  - --ignore-rules : ignore project/agent rules; behavior is prompt-driven only
+  - -t search      : restrict Hermes to the "search" tool only (kept minimal;
+                     in practice our prompts are text transforms and rarely
+                     exercise it)
+
+If "skill" in the submission means "a reusable, specialized capability," the
+closest thing we have is our own set of specialist prompt roles (Intake
+Analyst, Itinerary Planner, Accessibility Reviewer, etc.) — but these are
+app-defined prompts, not Hermes skills.
+
+------------------------------------------------------------------------------
+3. WHAT WE *DID* USE FROM HERMES (for context)
+------------------------------------------------------------------------------
+  - One-shot / non-interactive mode (`hermes -z`) as the LLM engine.
+  - Multi-agent orchestration (manager + specialist subagents) built in the
+    app on top of multiple independent one-shot Hermes calls (app/agents.py).
+  - Restricted tool set (`-t search`) and rule bypass (`--ignore-rules`).
+  - Timeout / stale-timeout tuning via HERMES_API_CALL_STALE_TIMEOUT.
+  - Isolated working directory (data/hermes_workdir).
+  - Structured JSON output parsing from Hermes responses (hermes_runner.py).
+  - Per-run tracing of every Hermes call (tokens/cost/latency) in app/trace.py.
+
+------------------------------------------------------------------------------
+4. BOTTOM LINE FOR THE FORM
+------------------------------------------------------------------------------
+  Memory : Application-level persistent per-chat memory (data/sessions/*.json)
+           layered around stateless Hermes one-shot calls. Not Hermes-native.
+  Skills : None used.
+==============================================================================

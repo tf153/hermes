@@ -1,0 +1,78 @@
+{
+  "description": "Named eval set for the travel-desk crew. Each case checks that the Intake Analyst extracts the right destination and persona, and that the Trip Director + intake correctly decide whether an accessibility review is needed. Run before/after prompt changes to compare versions.",
+  "threshold": 0.8,
+  "cases": [
+    {
+      "id": "goa-sunset-photo",
+      "message": "2 days in Goa, I'm a sunset chaser and love photography",
+      "expect": {
+        "destination_contains": "goa",
+        "personas_any": ["sunset", "photography"],
+        "needs_accessibility_review": false
+      }
+    },
+    {
+      "id": "goa-family-kids",
+      "message": "Family trip to Goa with 2 young kids, nothing too tiring",
+      "expect": {
+        "destination_contains": "goa",
+        "personas_any": ["family_with_kids"],
+        "needs_accessibility_review": true
+      }
+    },
+    {
+      "id": "goa-seniors-stairs",
+      "message": "My parents are coming to Goa, they can't climb stairs - temples and easy sights only",
+      "expect": {
+        "destination_contains": "goa",
+        "personas_any": ["seniors_low_mobility", "accessibility_first", "pilgrimage"],
+        "needs_accessibility_review": true
+      }
+    },
+    {
+      "id": "kyoto-slow-cafes",
+      "message": "Solo slow traveller in Kyoto, just cafes and quiet mornings",
+      "expect": {
+        "destination_contains": "kyoto",
+        "personas_any": ["slow_traveler"],
+        "needs_accessibility_review": false
+      }
+    },
+    {
+      "id": "jaipur-food",
+      "message": "3 days in Jaipur, we're on a foodie trip",
+      "expect": {
+        "destination_contains": "jaipur",
+        "personas_any": ["food"],
+        "needs_accessibility_review": false
+      }
+    },
+    {
+      "id": "bali-beaches",
+      "message": "Beach holiday in Bali for a week",
+      "expect": {
+        "destination_contains": "bali",
+        "personas_any": ["beaches"],
+        "needs_accessibility_review": false
+      }
+    },
+    {
+      "id": "pune-trek",
+      "message": "Trekking and forts around Pune, we love hikes",
+      "expect": {
+        "destination_contains": "pune",
+        "personas_any": ["trek"],
+        "needs_accessibility_review": false
+      }
+    },
+    {
+      "id": "goa-wheelchair",
+      "message": "Accessible trip to Goa for my grandmother in a wheelchair, no long walks please",
+      "expect": {
+        "destination_contains": "goa",
+        "personas_any": ["accessibility_first", "seniors_low_mobility"],
+        "needs_accessibility_review": true
+      }
+    }
+  ]
+}

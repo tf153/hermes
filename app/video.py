@@ -1,4 +1,4 @@
-"""Render a colorful, photo-led portrait map video for a personalized Goa plan.
+"""Render a colorful, photo-led portrait map video for a personalized trip plan.
 
 Each stop shows a real photo of the place, how long to spend there, its rating
 and a one-line caption, narrated by ElevenLabs. A route-map overview ties them
@@ -26,7 +26,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 TILE_URL = "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
-TILE_HEADERS = {"User-Agent": "HermesGoaTravel/1.0 (+https://growthx.club)"}
+TILE_HEADERS = {"User-Agent": "HermesTravel/1.0 (+https://growthx.club)"}
 FPS = 30
 
 FONT_DIR = Path("/usr/share/fonts/truetype/dejavu")
@@ -155,7 +155,7 @@ def _fit_zoom(stops: list[dict], w: int, h: int, pad: int = 110, tile: int = 256
     return 9, center
 
 
-def _render_route_map(stops: list[dict], w: int, h: int) -> Image.Image:
+def _render_route_map(stops: list[dict], city: str, w: int, h: int) -> Image.Image:
     zoom, center = _fit_zoom(stops, w, h)
     m = StaticMap(w, h, url_template=TILE_URL, headers=TILE_HEADERS, tile_request_timeout=15)
     m.add_line(Line([(s["lng"], s["lat"]) for s in stops], "#ff6f3c", 6))
@@ -170,20 +170,20 @@ def _render_route_map(stops: list[dict], w: int, h: int) -> Image.Image:
     img = _shade(img, w, h)
     draw = ImageDraw.Draw(img, "RGBA")
     _pill(draw, 40, 54, "YOUR ROUTE", _font(True, 30), (*ACCENT, 235), LIGHT)
-    draw.text((44, h - 150), f"{len(stops)} stops across Goa", font=_font(True, 52), fill=LIGHT)
+    draw.text((44, h - 150), f"{len(stops)} stops across {city}", font=_font(True, 52), fill=LIGHT)
     draw.text((46, h - 88), "Tap play to explore each one", font=_font(False, 34), fill=(210, 216, 226))
     return img
 
 
 # ----------------------------- cards -----------------------------
 
-def _hero_card(title: str, subtitle: str, hero: Image.Image | None, w: int, h: int) -> Image.Image:
+def _hero_card(title: str, subtitle: str, city: str, hero: Image.Image | None, w: int, h: int) -> Image.Image:
     if hero is not None:
         img = _shade(_cover(hero, w, h), w, h)
     else:
         img = _gradient_bg(w, h, (255, 138, 76), (196, 62, 40))
     draw = ImageDraw.Draw(img, "RGBA")
-    draw.text((48, h * 0.30), "YOUR GOA, PERSONALIZED", font=_font(True, 34), fill=ACCENT)
+    draw.text((48, h * 0.30), f"YOUR {city.upper()}, PERSONALIZED", font=_font(True, 34), fill=ACCENT)
     size = 82
     lines = _wrap(draw, title, _font(True, size), w - 96)
     if len(lines) > 3:
@@ -201,16 +201,32 @@ def _hero_card(title: str, subtitle: str, hero: Image.Image | None, w: int, h: i
     return img
 
 
-def _outro_card(closing: str, w: int, h: int) -> Image.Image:
+def _outro_card(closing: str, city: str, w: int, h: int) -> Image.Image:
     img = _gradient_bg(w, h, (255, 120, 66), (150, 40, 30))
     draw = ImageDraw.Draw(img)
     y = h * 0.32
-    for line in _wrap(draw, closing or "Your Goa awaits.", _font(True, 60), w - 96):
+    for line in _wrap(draw, closing or f"{city} awaits.", _font(True, 60), w - 96):
         draw.text((46, y), line, font=_font(True, 60), fill=LIGHT)
         y += 78
     draw.text((46, h * 0.82), "Planned by your AI travel companion", font=_font(False, 32), fill=(255, 235, 228))
     draw.text((46, h * 0.82 + 44), "Built on Hermes", font=_font(True, 34), fill=LIGHT)
     return img
+
+
+def _map_inset(stop: dict, d: int) -> Image.Image | None:
+    """Small circular map centred on the stop, for overlaying on its photo."""
+    m = StaticMap(d, d, url_template=TILE_URL, headers=TILE_HEADERS, tile_request_timeout=10)
+    m.add_marker(CircleMarker((stop["lng"], stop["lat"]), "#ffffff", 18))
+    m.add_marker(CircleMarker((stop["lng"], stop["lat"]), "#ff6f3c", 12))
+    try:
+        tile = m.render(zoom=12, center=(stop["lng"], stop["lat"])).convert("RGBA")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("map inset failed for %s: %s", stop.get("name"), exc)
+        return None
+    mask = Image.new("L", (d, d), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, d - 1, d - 1], fill=255)
+    tile.putalpha(mask)
+    return tile
 
 
 def _stop_frame(stop: dict, index: int, total: int, photo: Image.Image | None, w: int, h: int) -> Image.Image:
@@ -226,6 +242,16 @@ def _stop_frame(stop: dict, index: int, total: int, photo: Image.Image | None, w
     _pill(draw, 40, 52, f"STOP {index + 1}/{total}", _font(True, 30), (*ACCENT, 240), LIGHT)
     if stop.get("dwell"):
         _dwell_pill(draw, w - 40, 52, str(stop["dwell"]), _font(True, 30))
+
+    # circular "where is this" map inset (photo frames only - the fallback
+    # frame is already a map)
+    if photo is not None:
+        d = int(w * 0.30)
+        inset = _map_inset(stop, d)
+        if inset is not None:
+            ix, iy = w - 40 - d, 52 + 56 + 24
+            img.paste(inset, (ix, iy), inset)
+            draw.ellipse([ix - 3, iy - 3, ix + d + 2, iy + d + 2], outline=LIGHT, width=5)
 
     # bottom caption block
     x, y = 46, int(h * 0.62)
@@ -312,13 +338,16 @@ async def render_trip_video(plan: dict, trip_id: str) -> Path:
         raise RuntimeError("cannot render video: no stops")
 
     w, h = settings.video_width, settings.video_height
-    workdir = Path(tempfile.mkdtemp(prefix=f"goa_{trip_id}_"))
+    workdir = Path(tempfile.mkdtemp(prefix=f"trip_{trip_id}_"))
 
-    segments: list[dict] = [{"kind": "hero", "text": plan.get("intro") or plan.get("title") or "Welcome to Goa."}]
+    destination = plan.get("destination") or settings.default_destination
+    city = destination.split(",")[0].strip()
+
+    segments: list[dict] = [{"kind": "hero", "text": plan.get("intro") or plan.get("title") or f"Welcome to {city}."}]
     for i, s in enumerate(stops):
         segments.append({"kind": "stop", "text": s.get("narration") or s.get("name", ""), "index": i})
-    segments.append({"kind": "map", "text": "And here's your whole route across Goa."})
-    segments.append({"kind": "outro", "text": plan.get("closing") or "Your Goa awaits."})
+    segments.append({"kind": "map", "text": f"And here's your whole route across {city}."})
+    segments.append({"kind": "outro", "text": plan.get("closing") or f"{city} awaits."})
 
     for n, seg in enumerate(segments):
         audio = await tts.synthesize(seg["text"], workdir / f"a{n}.mp3")
@@ -335,12 +364,12 @@ async def render_trip_video(plan: dict, trip_id: str) -> Path:
         for n, seg in enumerate(segments):
             img_path = workdir / f"f{n}.png"
             if seg["kind"] == "hero":
-                _hero_card(plan.get("title") or "Your Goa", plan.get("subtitle") or "",
-                           photos[0] if photos else None, w, h).save(img_path)
+                _hero_card(plan.get("title") or f"Your {city}", plan.get("subtitle") or "",
+                           city, photos[0] if photos else None, w, h).save(img_path)
             elif seg["kind"] == "map":
-                _render_route_map(stops, w, h).save(img_path)
+                _render_route_map(stops, city, w, h).save(img_path)
             elif seg["kind"] == "outro":
-                _outro_card(plan.get("closing") or "", w, h).save(img_path)
+                _outro_card(plan.get("closing") or "", city, w, h).save(img_path)
             else:
                 i = seg["index"]
                 _stop_frame(stops[i], i, len(stops), photos[i], w, h).save(img_path)

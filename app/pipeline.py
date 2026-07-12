@@ -1,4 +1,5 @@
-"""Persona-aware Goa pipeline: intake -> pick spots -> render a 1-min map video."""
+"""Persona-aware travel pipeline: a manager-led agent crew that plans a trip
+and renders a short map video, with every step recorded to a live run trace."""
 
 import json
 import logging
@@ -7,9 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from app import linkup, photos, store, video
+from app import agents, linkup, photos, store, trace, video
 from app.config import settings
-from app.hermes_runner import run_hermes_json
 
 logger = logging.getLogger(__name__)
 
@@ -32,71 +32,6 @@ class TripResult:
     summary: str
 
 
-INTAKE_PROMPT = """You are the intake step of a Goa travel-planner. Every trip is in Goa, India.
-Today's date is {today}.
-
-Stored trip spec from earlier messages in this chat (null if none):
-{stored_spec}
-
-New message from the user:
-"{message}"
-
-Decide whether the message starts a fresh trip or refines the stored spec, then
-merge accordingly. Infer the traveler persona(s) from this set when implied:
-pilgrimage, sunset, trek, photography, family_with_kids, seniors_low_mobility,
-accessibility_first, food, slow_traveler, beaches, nature.
-
-Respond with ONLY a JSON object (no prose, no fences), using null/[] when unknown:
-{{
-  "personas": ["one or more of the persona keys above"],
-  "days": <int, default 2 if unstated>,
-  "group": {{"kids": <bool>, "seniors": <bool>}},
-  "pace": "relaxed | balanced | packed",
-  "accessibility": ["constraints, e.g. 'no long walks', 'avoid stairs and steep climbs'"],
-  "interests": ["free-form extra wishes, e.g. 'seafood', 'quiet cafes'"],
-  "summary": "one short line describing this traveler's Goa trip"
-}}
-
-Keep everything from the stored spec that the new message does not change."""
-
-
-PLAN_PROMPT = """You are the personalization step of a Goa travel-planner. You design a
-1-minute map video itinerary tailored to the traveler.
-
-Traveler spec:
-{spec}
-
-Candidate Goa places (real Google Maps data with ratings and review snippets).
-Choose ONLY from these and copy each chosen "name" EXACTLY:
-{places}
-
-Select {n_stops} places that best fit this persona and route them in a sensible
-order (roughly geographic / by time of day; put sunset spots late). Use the
-ratings and review snippets to justify picks and to AVOID poor fits for the
-stated accessibility needs (flag stairs, steep climbs, long walks for
-seniors/low-mobility/families with kids).
-
-Write warm, vivid narration meant to be SPOKEN aloud. Keep each stop's narration
-to ONE short punchy sentence (about 5-8 seconds). Keep it snappy - shorter is better.
-
-Respond with ONLY a JSON object (no prose, no fences):
-{{
-  "title": "punchy 3-6 word title, e.g. 'Goa for Sunset Chasers'",
-  "subtitle": "one short line, e.g. '2 days | golden hours & photo stops'",
-  "intro": "one short spoken opening sentence naming who this trip is for",
-  "stops": [
-    {{
-      "name": "EXACT place name from the candidates",
-      "time_label": "e.g. 'Day 1 - Morning' or 'Sunset'",
-      "dwell": "how long to spend here, e.g. '1-2 hrs', '45 min', '30 min'",
-      "blurb": "<=7 word on-screen caption",
-      "narration": "ONE short spoken sentence about this stop for this persona"
-    }}
-  ],
-  "closing": "one short spoken closing sentence"
-}}"""
-
-
 def _compact_places(places: list[dict]) -> list[dict]:
     """Trim the place records to what the model needs (keeps the prompt small)."""
     compact = []
@@ -115,6 +50,43 @@ def _compact_places(places: list[dict]) -> list[dict]:
     return compact
 
 
+def _resolve_stops(plan: dict, by_name: dict[str, dict]) -> list[dict]:
+    """Attach real coordinates from our dataset (never trust model coords)."""
+    resolved: list[dict] = []
+    for stop in plan.get("stops") or []:
+        place = by_name.get(stop.get("name"))
+        if not place:
+            place = next(
+                (
+                    v
+                    for k, v in by_name.items()
+                    if k.lower() == str(stop.get("name")).lower()
+                ),
+                None,
+            )
+        if not place:
+            continue
+        resolved.append(
+            {
+                "name": place["name"],
+                "lat": place["lat"],
+                "lng": place["lng"],
+                "rating": place.get("rating"),
+                "reviews_count": place.get("reviews_count"),
+                "type": place.get("type"),
+                "address": place.get("address"),
+                "description": place.get("description"),
+                "reviews": (place.get("reviews") or [])[:2],
+                "thumbnail": place.get("thumbnail"),
+                "time_label": stop.get("time_label") or "",
+                "dwell": stop.get("dwell") or "",
+                "blurb": stop.get("blurb") or place.get("type") or "",
+                "narration": stop.get("narration") or "",
+            }
+        )
+    return resolved
+
+
 async def _noop_progress(_: str) -> None:
     return None
 
@@ -122,7 +94,7 @@ async def _noop_progress(_: str) -> None:
 # Stages shown on the live trip page, in order.
 BUILD_STAGES: list[tuple[str, str]] = [
     ("understanding", "Understanding who this trip is for"),
-    ("selecting", "Picking the right Goa spots from real reviews"),
+    ("selecting", "Picking the right spots from real reviews"),
     ("rendering", "Rendering your personalized map video"),
 ]
 
@@ -171,39 +143,167 @@ def create_trip(chat_id: int) -> TripHandle:
     return TripHandle(trip_id=trip_id, url=url)
 
 
-PLAYER_PAGE = """<!DOCTYPE html>
+TRIP_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>__TITLE__</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
+  :root { --bg:#111827; --card:#1f2937; --line:#374151; --muted:#9ca3af;
+          --text:#f5f5f5; --accent:#ff6f3c; --star:#ffd65a; }
+  * { box-sizing:border-box; }
   body { margin:0; font-family:-apple-system,'Segoe UI',Roboto,sans-serif;
-         background:#111827; color:#f5f5f5; min-height:100vh;
-         display:flex; flex-direction:column; align-items:center;
-         justify-content:center; padding:24px; box-sizing:border-box; }
-  h1 { margin:0 0 4px; font-size:1.5rem; text-align:center; }
-  p.sub { margin:0 0 20px; color:#9ca3af; text-align:center; }
-  video { width:min(92vw,420px); aspect-ratio:9/16; border-radius:16px;
-          background:#000; box-shadow:0 12px 40px rgba(0,0,0,.5); }
-  a.dl { margin-top:18px; color:#ff6f3c; text-decoration:none; font-weight:600; }
+         background:var(--bg); color:var(--text); }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 18px 60px; }
+  header h1 { margin:0 0 4px; font-size:1.7rem; }
+  header p.sub { margin:0 0 10px; color:var(--muted); }
+  .meta { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:22px; }
+  .chip { background:var(--card); border:1px solid var(--line); border-radius:999px;
+          padding:5px 14px; font-size:.82rem; color:var(--muted); }
+  .chip b { color:var(--text); }
+  .cols { display:grid; grid-template-columns:minmax(0,380px) minmax(0,1fr);
+          gap:22px; align-items:start; }
+  @media (max-width:760px) { .cols { grid-template-columns:1fr; } }
+  video { width:100%; aspect-ratio:9/16; border-radius:16px; background:#000;
+          box-shadow:0 12px 40px rgba(0,0,0,.5); }
+  .links { margin-top:12px; display:flex; gap:18px; flex-wrap:wrap; }
+  .links a { color:var(--accent); text-decoration:none; font-weight:600; font-size:.9rem; }
+  #map { height:380px; border-radius:16px; border:1px solid var(--line); z-index:0; }
+  h2 { font-size:1.15rem; margin:30px 0 14px; }
+  .stop { display:flex; gap:14px; background:var(--card); border:1px solid var(--line);
+          border-radius:14px; padding:14px; margin-bottom:12px; cursor:pointer; }
+  .stop:hover { border-color:var(--accent); }
+  .stop img.photo { width:104px; height:104px; object-fit:cover; border-radius:10px; flex:none; }
+  .stop .noimg { width:104px; height:104px; border-radius:10px; flex:none;
+                 background:linear-gradient(160deg,#ff8a4c,#c43e28); display:flex;
+                 align-items:center; justify-content:center; font-weight:700; font-size:1.5rem; }
+  .stop .body { min-width:0; flex:1; }
+  .stop .top { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .stop .num { color:var(--accent); font-weight:700; font-size:.8rem; }
+  .stop .when { color:var(--accent); font-size:.72rem; text-transform:uppercase;
+                letter-spacing:.05em; font-weight:700; }
+  .stop h3 { margin:2px 0 4px; font-size:1.02rem; }
+  .stop .facts { color:var(--muted); font-size:.82rem; margin-bottom:6px; }
+  .stop .facts b.star { color:var(--star); }
+  .stop .desc { color:#d1d5db; font-size:.86rem; margin:0 0 6px; }
+  .stop .quote { color:var(--muted); font-size:.8rem; font-style:italic;
+                 border-left:3px solid var(--line); padding-left:10px; margin:6px 0 0; }
+  .marker-pin { background:var(--accent); color:#fff; border:2px solid #fff;
+                border-radius:50%; width:28px; height:28px; display:flex;
+                align-items:center; justify-content:center; font-weight:700;
+                font-size:13px; box-shadow:0 2px 6px rgba(0,0,0,.5); }
+  footer { margin-top:34px; color:var(--muted); font-size:.8rem; text-align:center; }
 </style>
 </head>
 <body>
-  <h1>__TITLE__</h1>
-  <p class="sub">__SUBTITLE__</p>
-  <video controls autoplay muted playsinline src="__VIDEO_URL__"></video>
-  <a class="dl" href="__VIDEO_URL__" download>Download video</a>
+<div class="wrap">
+  <header>
+    <h1>__TITLE__</h1>
+    <p class="sub">__SUBTITLE__</p>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="cols">
+    <div>
+      <video controls autoplay muted playsinline src="__VIDEO_URL__"></video>
+      <div class="links">
+        <a href="__VIDEO_URL__" download>Download video</a>
+        <a href="/runs/__TRIP_ID__">See how the agents built this &rsaquo;</a>
+      </div>
+    </div>
+    <div>
+      <div id="map"></div>
+      <h2>Your itinerary</h2>
+      <div id="stops"></div>
+    </div>
+  </div>
+
+  <footer>Planned by your AI travel desk · built on Hermes</footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const plan = __PLAN_JSON__;
+const stops = plan.stops || [];
+
+function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// header chips
+const meta = [];
+if (plan.destination) meta.push(`<span class="chip"><b>${esc(plan.destination)}</b></span>`);
+meta.push(`<span class="chip"><b>${stops.length}</b> stops</span>`);
+const dwells = stops.filter(s=>s.dwell).length;
+if (dwells) meta.push(`<span class="chip">time planned per stop</span>`);
+document.getElementById("meta").innerHTML = meta.join("");
+
+// itinerary cards
+document.getElementById("stops").innerHTML = stops.map((s, i) => {
+  const img = s.thumbnail
+    ? `<img class="photo" src="${esc(s.thumbnail)}" alt="${esc(s.name)}" loading="lazy">`
+    : `<div class="noimg">${i+1}</div>`;
+  const facts = [
+    s.rating ? `<b class="star">\u2605 ${esc(s.rating)}</b>` : "",
+    s.reviews_count ? `${Number(s.reviews_count).toLocaleString()} reviews` : "",
+    s.dwell ? `\u23F1 ${esc(s.dwell)}` : "",
+    s.address ? esc(s.address) : "",
+  ].filter(Boolean).join(" · ");
+  const quote = (s.reviews && s.reviews[0]) ? `<p class="quote">\u201C${esc(s.reviews[0])}\u201D</p>` : "";
+  return `<div class="stop" data-i="${i}">
+    ${img}
+    <div class="body">
+      <div class="top"><span class="num">STOP ${i+1}</span>
+        ${s.time_label ? `<span class="when">${esc(s.time_label)}</span>` : ""}</div>
+      <h3>${esc(s.name)}</h3>
+      ${facts ? `<div class="facts">${facts}</div>` : ""}
+      <p class="desc">${esc(s.description || s.blurb || "")}</p>
+      ${s.narration ? `<p class="desc" style="color:var(--muted)">${esc(s.narration)}</p>` : ""}
+      ${quote}
+    </div>
+  </div>`;
+}).join("");
+
+// map with numbered markers + route line
+const withCoords = stops.filter(s => s.lat != null && s.lng != null);
+if (withCoords.length) {
+  const map = L.map("map", { scrollWheelZoom: false });
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+    { attribution: "&copy; OpenStreetMap &copy; CARTO", maxZoom: 19 }).addTo(map);
+  const latlngs = withCoords.map(s => [s.lat, s.lng]);
+  L.polyline(latlngs, { color: "#ff6f3c", weight: 4, opacity: .85 }).addTo(map);
+  const markers = withCoords.map((s, i) => {
+    const icon = L.divIcon({ className: "", html: `<div class="marker-pin">${i+1}</div>`,
+      iconSize: [28, 28], iconAnchor: [14, 14] });
+    return L.marker([s.lat, s.lng], { icon }).addTo(map)
+      .bindPopup(`<b>${esc(s.name)}</b><br>${esc(s.time_label || "")}`);
+  });
+  map.fitBounds(L.latLngBounds(latlngs).pad(0.18));
+  document.querySelectorAll(".stop").forEach(el => el.onclick = () => {
+    const i = stops.indexOf(stops[el.dataset.i]);
+    const j = withCoords.indexOf(stops[el.dataset.i]);
+    if (j >= 0) { map.setView([withCoords[j].lat, withCoords[j].lng], 14); markers[j].openPopup(); }
+    document.getElementById("map").scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+} else {
+  document.getElementById("map").style.display = "none";
+}
+</script>
 </body>
 </html>
 """
 
 
 def _write_player_page(trip_id: str, plan: dict) -> None:
+    # </ -> <\/ keeps the inlined JSON from closing the <script> tag early.
+    plan_json = json.dumps(plan, ensure_ascii=False).replace("</", "<\\/")
     html = (
-        PLAYER_PAGE.replace("__TITLE__", plan.get("title") or "Your Goa Trip")
+        TRIP_PAGE.replace("__TITLE__", plan.get("title") or "Your Trip")
         .replace("__SUBTITLE__", plan.get("subtitle") or "")
         .replace("__VIDEO_URL__", f"/video/{trip_id}.mp4")
+        .replace("__TRIP_ID__", trip_id)
+        .replace("__PLAN_JSON__", plan_json)
     )
     (settings.trips_dir / trip_id / "index.html").write_text(html, encoding="utf-8")
 
@@ -229,74 +329,98 @@ async def _build_trip_inner(
     progress: ProgressCallback,
 ) -> TripResult:
     session = store.load_session(chat_id)
+    stored_spec = session.get("spec")
+    trace.start_trace(trip_id)
 
-    set_status(trip_id, stage="understanding")
-    await progress("Understanding who this trip is for...")
-    spec = await run_hermes_json(
-        INTAKE_PROMPT.format(
-            today=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            stored_spec=json.dumps(session.get("spec"), ensure_ascii=False),
-            message=message.replace('"', "'"),
+    # The Trip Director (manager) wraps the whole run; every specialist span
+    # nests under it, so the trace reads as "manager -> specialists".
+    async with trace.span("Trip Director", "Run the travel desk", kind="group") as root:
+        set_status(trip_id, stage="understanding")
+        await progress("Trip Director is planning the work...")
+        decision = await agents.manager_plan(message, stored_spec)
+        root.note(
+            request_type=decision.get("request_type"),
+            needs_accessibility_review=decision.get("needs_accessibility_review"),
+            subtasks=decision.get("subtasks"),
+            reasoning=decision.get("reasoning"),
         )
-    )
-    logger.info("intake spec: %s", spec)
-    set_status(trip_id, stage="selecting", summary=spec.get("summary"))
+        set_status(trip_id, manager_plan=decision)
 
-    await progress("Finding the right Goa spots and reading reviews...")
-    places = await linkup.fetch_goa_places()
-    by_name = {p["name"]: p for p in places if p.get("name")}
-
-    days = spec.get("days") or 2
-    n_stops = max(4, min(7, days * 3))
-
-    await progress("Designing your personalized itinerary...")
-    plan = await run_hermes_json(
-        PLAN_PROMPT.format(
-            spec=json.dumps(spec, ensure_ascii=False),
-            places=json.dumps(_compact_places(places), ensure_ascii=False),
-            n_stops=n_stops,
+        await progress("Understanding who this trip is for...")
+        spec = await agents.intake_analyst(
+            message,
+            stored_spec,
+            datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            settings.default_destination,
         )
-    )
-
-    # Attach real coordinates from our dataset (never trust model-invented coords).
-    resolved_stops = []
-    for stop in plan.get("stops") or []:
-        place = by_name.get(stop.get("name"))
-        if not place:
-            # tolerate minor name drift by case-insensitive match
-            place = next(
-                (v for k, v in by_name.items() if k.lower() == str(stop.get("name")).lower()),
-                None,
-            )
-        if not place:
-            continue
-        resolved_stops.append(
-            {
-                "name": place["name"],
-                "lat": place["lat"],
-                "lng": place["lng"],
-                "rating": place.get("rating"),
-                "thumbnail": place.get("thumbnail"),
-                "time_label": stop.get("time_label") or "",
-                "dwell": stop.get("dwell") or "",
-                "blurb": stop.get("blurb") or place.get("type") or "",
-                "narration": stop.get("narration") or "",
-            }
+        logger.info("intake spec: %s", spec)
+        destination = (spec.get("destination") or settings.default_destination).strip()
+        set_status(
+            trip_id,
+            stage="selecting",
+            summary=spec.get("summary"),
+            destination=destination,
         )
 
-    if not resolved_stops:
-        raise RuntimeError("no valid stops resolved from the plan")
+        await progress(f"Researching real spots in {destination}...")
+        async with trace.span(
+            "Place Researcher", f"Live search for places in {destination}", kind="tool"
+        ) as sp:
+            places = await linkup.fetch_places(destination)
+            sp.note(source="Linkup", places_found=len(places))
+            sp.set_output(f"{len(places)} candidate places in {destination}")
+        by_name = {p["name"]: p for p in places if p.get("name")}
 
-    # Fill in a real photo per chosen stop (SerpAPI Google Maps, Wikipedia
-    # fallback), so the video is photo-led instead of map-only.
-    await photos.attach_photos(resolved_stops, "Goa, India")
+        days = spec.get("days") or 2
+        n_stops = max(4, min(7, days * 3))
+        compact = _compact_places(places)
 
-    plan["stops"] = resolved_stops
-    logger.info("plan: %s (%d stops)", plan.get("title"), len(resolved_stops))
-    set_status(trip_id, stage="rendering", title=plan.get("title"))
+        await progress("Designing your personalized itinerary...")
+        plan = await agents.itinerary_planner(destination, spec, compact, n_stops)
+        resolved_stops = _resolve_stops(plan, by_name)
 
-    await progress("Rendering your Goa video...")
-    video_path = await video.render_trip_video(plan, trip_id)
+        # Manager review step: dynamic - only when this request needs it. The
+        # reviewer can bounce the itinerary back to the planner for one revision.
+        needs_review = bool(
+            decision.get("needs_accessibility_review")
+        ) or agents.spec_has_mobility_limits(spec)
+        if needs_review and resolved_stops:
+            review = await agents.accessibility_reviewer(spec, resolved_stops)
+            set_status(trip_id, review=review)
+            if review.get("verdict") == "revise" and review.get("revision_notes"):
+                await progress("Trip Director sent the plan back for a revision...")
+                plan = await agents.itinerary_planner(
+                    destination,
+                    spec,
+                    compact,
+                    n_stops,
+                    revision_notes=review["revision_notes"],
+                )
+                resolved_stops = _resolve_stops(plan, by_name) or resolved_stops
+
+        if not resolved_stops:
+            raise RuntimeError("no valid stops resolved from the plan")
+
+        # Fill in a real photo per chosen stop (SerpAPI Google Maps, Wikipedia
+        # fallback), so the video is photo-led instead of map-only.
+        async with trace.span(
+            "Place Researcher", "Fetch a real photo per stop", kind="tool"
+        ) as sp:
+            await photos.attach_photos(resolved_stops, destination)
+            sp.note(stops=len(resolved_stops))
+
+        plan["stops"] = resolved_stops
+        plan["destination"] = destination
+        logger.info("plan: %s (%d stops)", plan.get("title"), len(resolved_stops))
+        set_status(trip_id, stage="rendering", title=plan.get("title"))
+
+        await progress("Rendering your video...")
+        async with trace.span(
+            "Video Producer", "Render narrated map video", kind="tool"
+        ) as sp:
+            video_path = await video.render_trip_video(plan, trip_id)
+            sp.note(stops=len(resolved_stops))
+            sp.set_output(str(video_path))
 
     (settings.videos_dir / f"{trip_id}.json").write_text(
         json.dumps(
@@ -318,5 +442,5 @@ async def _build_trip_inner(
     set_status(trip_id, stage="done", done=True, title=plan.get("title"))
 
     url = f"{settings.public_base_url.rstrip('/')}/trip/{trip_id}"
-    summary = plan.get("title") or spec.get("summary") or "your Goa trip"
+    summary = plan.get("title") or spec.get("summary") or "your trip"
     return TripResult(trip_id=trip_id, video_path=str(video_path), url=url, summary=summary)

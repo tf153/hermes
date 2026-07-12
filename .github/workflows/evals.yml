@@ -1,0 +1,31 @@
+name: crew-evals
+
+# Runs the named eval set for the travel-desk crew. The offline structural check
+# always runs and gates the PR. When hermes/provider secrets are configured on
+# the runner, the live eval also runs and fails the build if the crew's pass
+# rate drops below the dataset threshold (release gate).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Offline eval smoke check (always)
+        run: python -m eval.run_evals --offline
+      - name: Live crew evals (when configured)
+        if: ${{ env.OPENAI_API_KEY != '' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LINKUP_API_KEY: ${{ secrets.LINKUP_API_KEY }}
+        run: python -m eval.run_evals

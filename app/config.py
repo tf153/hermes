@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     linkup_api_key: str = ""  # place data: coords, ratings, review quotes
     serpapi_api_key: str = ""  # used only to fetch a real photo per place
+    default_destination: str = "Goa, India"  # when the user names no destination
     public_base_url: str = "http://localhost:8000"
     trip_ttl_hours: int = 24
 
@@ -30,6 +31,14 @@ class Settings(BaseSettings):
 
     hermes_bin: str = "hermes"
     hermes_timeout_seconds: int = 420
+    # Model label shown in the run trace (provider is not scored; display only).
+    hermes_model: str = "gpt-5.6-sol"
+
+    # Per-token cost estimate for the observability trace. Real token counts are
+    # not exposed by `hermes -z`, so the trace estimates tokens at ~4 chars each
+    # and prices them at these blended rates ($/1M tokens). Tune to your model.
+    cost_input_per_mtok: float = 2.5
+    cost_output_per_mtok: float = 10.0
 
     data_dir: Path = BASE_DIR / "data"
 
@@ -50,8 +59,8 @@ class Settings(BaseSettings):
         return self.data_dir / "hermes_workdir"
 
     @property
-    def places_cache_path(self) -> Path:
-        return self.data_dir / "goa_places.json"
+    def places_dir(self) -> Path:
+        return self.data_dir / "places"
 
 
 settings = Settings()
@@ -61,5 +70,6 @@ for _dir in (
     settings.videos_dir,
     settings.sessions_dir,
     settings.hermes_workdir,
+    settings.places_dir,
 ):
     _dir.mkdir(parents=True, exist_ok=True)
