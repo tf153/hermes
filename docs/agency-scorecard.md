@@ -18,15 +18,19 @@ public page and an MP4 in the chat.
 
 | Agent | Role |
 |---|---|
-| Trip Director (manager) | Plans the subtasks for this specific request; decides whether an accessibility review is needed; reviews the itinerary and sends it back for one revision when flagged. |
+| Trip Director (manager) | **Composes a crew for THIS traveller**: picks the relevant capabilities, invents a role title + brief for each, decides whether an accessibility review is needed, reviews the itinerary, and handles specialist escalations. |
 | Intake Analyst | Turns the message + stored context into a structured traveller spec. |
 | Place Researcher | Live Linkup web search for real places with ratings/reviews. |
-| Itinerary Planner | Selects and routes stops, writes narration; revises on request. |
+| **Persona specialists** (spawned per request) | Chosen from a capability library — seniors/low-mobility, spiritual, roadtrip, family, food, sunset/photography — each runs with a manager-invented role title and advises the planner (which stops to prefer/avoid, ordering). Runs **concurrently**; escalates with a concrete blocker when it can't satisfy its brief. |
+| Itinerary Planner | Selects and routes stops using the specialists' guidance; writes narration; revises on request. |
 | Accessibility Reviewer | Checks stops against mobility/age limits; approves or requests a revision. |
 | Video Producer | Renders the narrated map video. |
 
-Delegation is **dynamic**: a plain beach request skips the review step; a
-seniors/kids/no-stairs request adds it and often triggers a real revision cycle.
+Delegation is **emergent**: the crew that appears in the trace is composed for
+each request. A seniors + temples message spawns roles like "Step-Free Access
+Scout" and "Pilgrimage Advisor" that did not exist at kickoff; a plain beach
+request spawns none of them and skips the review step. Specialists that can't
+meet a constraint escalate, and the manager records the blocker for the planner.
 
 **Try it (judge, from your own phone):** message the bot, get a live build page
 instantly and the video in ~2–3 min. Open `PUBLIC_BASE_URL/runs/{trip_id}` to
@@ -50,13 +54,13 @@ autonomously during judging.
 | Parameter | Weight | Level | Points | What to verify |
 |---|---|:--:|---:|---|
 | Working product shipping real output | 20x | **L3** | 40 | Message the bot; a real video + public trip page are produced end-to-end with no human in the loop. *(L4 argued: fully autonomous, no approval step.)* Overflow: run more trips live for +20 each. |
-| Agent org structure | 5x | **L4** | 15 | Manager plans subtasks for the specific request, delegates, and reviews outputs. Verify: give a plain "beach trip in Bali" (review step is skipped) vs "parents can't climb stairs" (review runs + the itinerary is sent back to the Planner for a revision) — the trace shows two different plans and a revision span. |
+| Agent org structure | 5x | **L5** | 20 | **Emergent org**: the manager spawns persona specialists on the fly, with role titles it invents per request, and stuck specialists escalate. Verify: run "parents can't climb stairs, temples only" vs "beach week in Bali" — the traces show *different specialist rosters* (roles absent at kickoff) and, for the seniors case, an escalation + revision span. `app/agents.py: compose_crew`, `run_specialist`. |
 | Observability | 7x | **L4** | 21 | Open `/runs/{trip_id}`: manager→specialist call tree, tokens + est. cost + latency on every step, filter by agent, expand any step for its input/output. Raw JSON at `/trip/{id}/trace`. *(L5 would add run diffing + alerts + search across runs.)* |
-| Evaluation and iteration | 5x | **L3** | 10 | Named, version-controlled set (`eval/dataset.json`); run `python -m eval.run_evals` to compare versions. CI gate stub (`.github/workflows/evals.yml`) points toward L4. |
+| Evaluation and iteration | 5x | **L4** | 15 | Automated, version-controlled set (`eval/dataset.json`) + runner that **fails below the threshold** to gate releases (`python -m eval.run_evals`; CI `.github/workflows/evals.yml`). Results are saved per version (`eval/results/`) and `--trend` compares versions. **Closed loop wired (L5 machinery):** reviewer-flagged and failed runs are captured into a growing set (`eval/capture.py` → `captured.jsonl`) and re-scored; prompts are version-controlled in git. *(Full L5 once captured cases + a measured cross-version gain accumulate.)* |
 | Agent handoffs and memory | 2x | **L3** | 4 | Per-chat spec persists across messages (`data/sessions/{chat_id}.json`); a follow-up ("add my parents, no stairs") refines the same trip. *(L4 argued.)* |
 | Cost and latency per task | 1x | **L3** | 2 | Trace shows per-run wall-clock + est. cost; a full run is a few minutes and cents. Time a fresh run live (worse of time/cost governs). |
 | Management UI | 1x | **L1** | 0 | The run viewer is read-only observability, not an operator console for defining agent roles. Honest floor. |
-| **Base subtotal** | | | **92** | |
+| **Base subtotal** | | | **102** | |
 
 ## Power-ups (+25 each, flat, stack on the base)
 
@@ -81,12 +85,12 @@ eligible; drive product visitors/signups to unlock the parameters that pay.
 
 | Component | Points |
 |---|---:|
-| AI as Agency base (as built) | ~92 |
+| AI as Agency base (as built) | ~102 |
 | Power-ups live now | +75 |
 | Cross-track Virality bonus | +2 |
-| **Total (today)** | **~169** |
+| **Total (today)** | **~179** |
 
-With Wispr Flow banked: **~194**, plus overflow for every extra autonomous trip
+With Wispr Flow banked: **~204**, plus overflow for every extra autonomous trip
 run live during judging, plus upside if the real-output row is granted L4.
 
 *Levels are our honest self-assessment to speed verification, not final scores —

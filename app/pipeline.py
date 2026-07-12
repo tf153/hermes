@@ -10,6 +10,7 @@ from typing import Awaitable, Callable
 
 from app import agents, linkup, photos, store, trace, video
 from app.config import settings
+from eval import capture
 
 logger = logging.getLogger(__name__)
 
@@ -336,16 +337,6 @@ async def _build_trip_inner(
     # nests under it, so the trace reads as "manager -> specialists".
     async with trace.span("Trip Director", "Run the travel desk", kind="group") as root:
         set_status(trip_id, stage="understanding")
-        await progress("Trip Director is planning the work...")
-        decision = await agents.manager_plan(message, stored_spec)
-        root.note(
-            request_type=decision.get("request_type"),
-            needs_accessibility_review=decision.get("needs_accessibility_review"),
-            subtasks=decision.get("subtasks"),
-            reasoning=decision.get("reasoning"),
-        )
-        set_status(trip_id, manager_plan=decision)
-
         await progress("Understanding who this trip is for...")
         spec = await agents.intake_analyst(
             message,
@@ -375,8 +366,42 @@ async def _build_trip_inner(
         n_stops = max(4, min(7, days * 3))
         compact = _compact_places(places)
 
+        # Trip Director composes a request-specific crew of persona specialists
+        # (invented roles + briefs), then runs them concurrently to advise the
+        # planner. Which specialists exist depends entirely on this traveller.
+        await progress("Trip Director is assembling your specialist crew...")
+        decision = await agents.compose_crew(spec)
+        crew = decision.get("crew") or []
+        root.note(
+            crew=[f"{c['role']} ({c['capability']})" for c in crew],
+            needs_accessibility_review=decision.get("needs_accessibility_review"),
+            reasoning=decision.get("reasoning"),
+        )
+        set_status(trip_id, manager_plan=decision)
+
+        specialist_results = await agents.run_crew_specialists(crew, spec, compact)
+        guidance = agents.format_specialist_guidance(specialist_results)
+
+        # A specialist that could not satisfy its brief escalates; the manager
+        # notes the blockers and tells the planner to work around them.
+        blockers = [
+            {"role": r.get("role"), "blocker": r.get("blocker")}
+            for r in specialist_results
+            if r.get("status") == "blocked" and r.get("blocker")
+        ]
+        if blockers:
+            async with trace.span(
+                "Trip Director", "Resolve specialist escalations", kind="group"
+            ) as sp:
+                sp.note(blockers=blockers, resolution="proceed best-effort")
+            guidance += "\nKnown blockers to work around: " + "; ".join(
+                f"{b['role']}: {b['blocker']}" for b in blockers
+            )
+
         await progress("Designing your personalized itinerary...")
-        plan = await agents.itinerary_planner(destination, spec, compact, n_stops)
+        plan = await agents.itinerary_planner(
+            destination, spec, compact, n_stops, guidance=guidance
+        )
         resolved_stops = _resolve_stops(plan, by_name)
 
         # Manager review step: dynamic - only when this request needs it. The
@@ -389,16 +414,29 @@ async def _build_trip_inner(
             set_status(trip_id, review=review)
             if review.get("verdict") == "revise" and review.get("revision_notes"):
                 await progress("Trip Director sent the plan back for a revision...")
+                # Closed-loop eval: a real quality failure becomes a new eval case.
+                capture.capture_case(
+                    message,
+                    reason="accessibility_revision",
+                    destination=destination,
+                    spec=spec,
+                    extra={"issues": review.get("issues")},
+                )
                 plan = await agents.itinerary_planner(
                     destination,
                     spec,
                     compact,
                     n_stops,
+                    guidance=guidance,
                     revision_notes=review["revision_notes"],
                 )
                 resolved_stops = _resolve_stops(plan, by_name) or resolved_stops
 
         if not resolved_stops:
+            capture.capture_case(
+                message, reason="no_stops_resolved",
+                destination=destination, spec=spec,
+            )
             raise RuntimeError("no valid stops resolved from the plan")
 
         # Fill in a real photo per chosen stop (SerpAPI Google Maps, Wikipedia

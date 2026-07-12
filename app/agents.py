@@ -16,6 +16,7 @@ Every model call runs inside a `trace.span`, so the run viewer shows who was
 called, in what order, with tokens, cost and latency per step.
 """
 
+import asyncio
 import json
 import logging
 
@@ -26,34 +27,99 @@ from app.hermes_runner import HermesError, extract_json, run_hermes
 logger = logging.getLogger(__name__)
 
 
+# The capabilities the Trip Director can staff a trip with. The manager picks
+# only the ones that apply to a given traveller and invents a role title + brief
+# for each, so the crew that appears in the trace is composed per request rather
+# than a fixed roster (emergent org, not a static routing table).
+CAPABILITY_LIBRARY: dict[str, str] = {
+    "seniors": (
+        "Accessibility and low-mobility: prefer step-free access, short flat "
+        "walks, benches and shade; avoid steep climbs, many stairs and long treks."
+    ),
+    "spiritual": (
+        "Pilgrimage and spiritual sites: temples, churches, shrines; note dress "
+        "codes and visiting hours; keep the pacing calm and respectful."
+    ),
+    "roadtrip": (
+        "Roadtrip routing: order stops to minimise backtracking, group nearby "
+        "spots, and favour scenic drivable stretches between them."
+    ),
+    "family": (
+        "Family with kids: kid-friendly, low-tiring, safe; short activities with "
+        "snack and rest options; avoid anything strenuous or risky."
+    ),
+    "food": (
+        "Food and culinary: local cuisine, markets and iconic dishes; place meal "
+        "stops at sensible times of day."
+    ),
+    "sunset_photo": (
+        "Sunset and photography: golden-hour viewpoints and photogenic spots; "
+        "schedule sunset locations late in the day."
+    ),
+}
+
+
+def _capability_menu() -> str:
+    return "\n".join(f"- {key}: {desc}" for key, desc in CAPABILITY_LIBRARY.items())
+
+
 MANAGER_PROMPT = """You are the Trip Director, the manager of an AI travel desk.
-Read the incoming request and decide the plan of work for your specialist crew.
-Do NOT plan the trip itself - only decide how the crew should handle THIS request.
+Given the structured traveller spec, assemble the SMALLEST crew of specialists
+that will produce the best itinerary for THIS specific traveller. Do not plan the
+trip yourself - your specialists will advise the Itinerary Planner.
 
-Stored trip spec from earlier in this chat (null if this is a new conversation):
-{stored_spec}
+Traveller spec:
+{spec}
 
-New message from the traveller:
-"{message}"
+Available specialist capabilities (choose ONLY the ones that clearly apply):
+{capabilities}
 
-Your specialists:
-- Intake Analyst: turns the message into a structured traveller spec.
-- Place Researcher: live web search for real places with ratings and reviews.
-- Itinerary Planner: selects and routes stops and writes narration.
-- Accessibility Reviewer: checks the itinerary against mobility/age limits.
-- Video Producer: renders the final video.
+For each capability you choose, invent a short role TITLE tailored to this
+traveller and write a one-line BRIEF telling that specialist exactly what to do
+for this trip. Choose at most 4. Skip capabilities that do not apply.
 
 Respond with ONLY a JSON object (no prose, no fences):
 {{
-  "request_type": "fresh_trip" | "refinement",
+  "crew": [
+    {{"capability": "<one capability key from the list>",
+      "role": "<invented role title for this traveller>",
+      "brief": "<one line, specific to this traveller>"}}
+  ],
   "needs_accessibility_review": true or false,
-  "subtasks": [ {{"agent": "<specialist name>", "goal": "<one short line>"}} ],
-  "reasoning": "one short line: why this plan fits THIS specific request"
+  "reasoning": "one short line: why this crew fits THIS traveller"
 }}
 
-Set needs_accessibility_review to true when the traveller (now or in the stored
-spec) implies seniors, young kids, disability, low mobility, or asks to avoid
-stairs, steep climbs or long walks. Otherwise set it false and skip that step."""
+Set needs_accessibility_review true when the spec implies seniors, young kids,
+disability, low mobility, or avoiding stairs, steep climbs or long walks."""
+
+
+SPECIALIST_PROMPT = """You are the {role}, a specialist on an AI travel desk.
+Your brief for this trip:
+{brief}
+
+Your capability focus: {guidance}
+
+Traveller spec:
+{spec}
+
+Candidate places (real data with ratings and review snippets). Refer to them by
+their EXACT "name":
+{places}
+
+Recommend how the Itinerary Planner should use these places for THIS traveller.
+If you genuinely cannot fulfil your brief from these candidates (for example none
+fit the constraint you own), escalate: set status to "blocked" with a concrete
+blocker instead of guessing.
+
+Respond with ONLY a JSON object (no prose, no fences):
+{{
+  "status": "ok" or "blocked",
+  "blocker": "if blocked, the concrete reason (else empty string)",
+  "prioritize": ["exact place names to feature"],
+  "avoid": ["exact place names to avoid"],
+  "ordering_hint": "e.g. 'put sunset spots last' (empty if none)",
+  "notes": "one or two lines of concrete guidance for the planner"
+}}"""
 
 
 INTAKE_PROMPT = """You are the Intake Analyst on a travel desk.
@@ -156,33 +222,148 @@ async def _llm_json(agent: str, task: str, prompt: str) -> dict:
         return data
 
 
-async def manager_plan(message: str, stored_spec: dict | None) -> dict:
-    """Trip Director decides how the crew should handle this specific request."""
+def _fallback_crew(spec: dict) -> list[dict]:
+    """A sensible crew inferred from the spec when the manager call fails."""
+    personas = set(spec.get("personas") or [])
+    persona_to_cap = {
+        "seniors_low_mobility": "seniors",
+        "accessibility_first": "seniors",
+        "family_with_kids": "family",
+        "pilgrimage": "spiritual",
+        "food": "food",
+        "sunset": "sunset_photo",
+        "photography": "sunset_photo",
+    }
+    caps: list[str] = []
+    for persona in personas:
+        cap = persona_to_cap.get(persona)
+        if cap and cap not in caps:
+            caps.append(cap)
+    if spec_has_mobility_limits(spec) and "seniors" not in caps:
+        caps.insert(0, "seniors")
+    return [
+        {"capability": cap, "role": cap.replace("_", " ").title() + " Specialist",
+         "brief": f"Optimise the itinerary for {cap.replace('_', ' ')}."}
+        for cap in caps[:4]
+    ]
+
+
+async def compose_crew(spec: dict) -> dict:
+    """Trip Director assembles a request-specific crew of persona specialists."""
     prompt = MANAGER_PROMPT.format(
-        stored_spec=json.dumps(stored_spec, ensure_ascii=False),
-        message=message.replace('"', "'"),
+        spec=json.dumps(spec, ensure_ascii=False),
+        capabilities=_capability_menu(),
     )
     try:
-        decision = await _llm_json("Trip Director", "Plan the run", prompt)
+        decision = await _llm_json("Trip Director", "Compose the crew for this trip", prompt)
     except HermesError:
-        logger.warning("manager planning failed; using a default plan")
+        logger.warning("crew composition failed; inferring a crew from the spec")
         decision = {}
-    # Normalise so downstream code can rely on the shape.
+
+    # Keep only known capabilities and give every entry a usable role/brief.
+    crew: list[dict] = []
+    for entry in decision.get("crew") or []:
+        cap = entry.get("capability")
+        if cap not in CAPABILITY_LIBRARY:
+            continue
+        crew.append(
+            {
+                "capability": cap,
+                "role": (entry.get("role") or f"{cap.title()} Specialist").strip(),
+                "brief": (entry.get("brief") or CAPABILITY_LIBRARY[cap]).strip(),
+            }
+        )
+    if not crew:
+        crew = _fallback_crew(spec)
+
+    decision["crew"] = crew[:4]
     decision.setdefault(
-        "request_type", "refinement" if stored_spec else "fresh_trip"
+        "needs_accessibility_review", spec_has_mobility_limits(spec)
     )
-    decision.setdefault("needs_accessibility_review", False)
-    decision.setdefault(
-        "subtasks",
-        [
-            {"agent": "Intake Analyst", "goal": "Parse the request"},
-            {"agent": "Place Researcher", "goal": "Find real places"},
-            {"agent": "Itinerary Planner", "goal": "Select and route stops"},
-            {"agent": "Video Producer", "goal": "Render the video"},
-        ],
-    )
-    decision.setdefault("reasoning", "default plan")
+    decision.setdefault("reasoning", "crew composed from traveller spec")
     return decision
+
+
+async def run_specialist(
+    capability: str, role: str, brief: str, spec: dict, places: list[dict]
+) -> dict:
+    """Run one dynamically-composed persona specialist as a traced step.
+
+    The span is labelled with the manager's invented role title, so the trace
+    shows roles that did not exist at kickoff. A specialist that cannot satisfy
+    its brief escalates with a concrete blocker instead of guessing.
+    """
+    guidance = CAPABILITY_LIBRARY.get(capability, "")
+    prompt = SPECIALIST_PROMPT.format(
+        role=role,
+        brief=brief,
+        guidance=guidance,
+        spec=json.dumps(spec, ensure_ascii=False),
+        places=json.dumps(places, ensure_ascii=False),
+    )
+    async with trace.span(role, f"[{capability}] {brief}"[:80], kind="llm",
+                          model=settings.hermes_model) as sp:
+        try:
+            text = await run_hermes(prompt)
+            sp.set_llm(prompt, text, settings.hermes_model)
+            result = extract_json(text)
+        except HermesError as exc:
+            sp.note(escalated=True, blocker=str(exc)[:200])
+            return {"capability": capability, "role": role, "status": "blocked",
+                    "blocker": str(exc)[:200], "prioritize": [], "avoid": [], "notes": ""}
+        result.update(capability=capability, role=role)
+        if result.get("status") == "blocked":
+            sp.note(escalated=True, blocker=result.get("blocker"))
+        else:
+            sp.note(
+                prioritize=result.get("prioritize"),
+                avoid=result.get("avoid"),
+            )
+        return result
+
+
+async def run_crew_specialists(
+    crew: list[dict], spec: dict, places: list[dict]
+) -> list[dict]:
+    """Run the composed specialists concurrently; one failure never aborts the run."""
+    if not crew:
+        return []
+    tasks = [
+        run_specialist(c["capability"], c["role"], c["brief"], spec, places)
+        for c in crew
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: list[dict] = []
+    for c, res in zip(crew, results):
+        if isinstance(res, Exception):
+            logger.warning("specialist %s failed: %s", c["role"], res)
+            out.append(
+                {"capability": c["capability"], "role": c["role"],
+                 "status": "blocked", "blocker": str(res)[:200],
+                 "prioritize": [], "avoid": [], "notes": ""}
+            )
+        else:
+            out.append(res)
+    return out
+
+
+def format_specialist_guidance(results: list[dict]) -> str:
+    """Fold specialist recommendations into a block for the Itinerary Planner."""
+    lines: list[str] = []
+    for r in results:
+        if r.get("status") == "blocked":
+            continue
+        parts = []
+        if r.get("prioritize"):
+            parts.append("prefer " + ", ".join(r["prioritize"]))
+        if r.get("avoid"):
+            parts.append("avoid " + ", ".join(r["avoid"]))
+        if r.get("ordering_hint"):
+            parts.append(r["ordering_hint"])
+        detail = "; ".join(parts)
+        note = r.get("notes") or ""
+        lines.append(f"- {r.get('role')}: {note} {('(' + detail + ')') if detail else ''}".rstrip())
+    return "\n".join(lines)
 
 
 async def intake_analyst(
@@ -203,15 +384,21 @@ async def itinerary_planner(
     spec: dict,
     places: list[dict],
     n_stops: int,
+    guidance: str | None = None,
     revision_notes: str | None = None,
 ) -> dict:
-    """Select and route stops; when revising, address the reviewer's notes."""
+    """Select and route stops, using the specialists' guidance and any revision."""
     prompt = PLAN_PROMPT.format(
         destination=destination,
         spec=json.dumps(spec, ensure_ascii=False),
         places=json.dumps(places, ensure_ascii=False),
         n_stops=n_stops,
     )
+    if guidance:
+        prompt += (
+            "\n\nSPECIALIST GUIDANCE from the crew (weigh these recommendations "
+            "when choosing and ordering stops):\n" + guidance
+        )
     task = "Select and route stops"
     if revision_notes:
         prompt += (

@@ -1,0 +1,156 @@
+{
+  "version": "v-crew-1",
+  "timestamp": "2026-07-12T10:18:48.128116+00:00",
+  "pass_rate": 1.0,
+  "passed": 24,
+  "total": 24,
+  "n_cases": 8,
+  "results": [
+    {
+      "id": "goa-sunset-photo",
+      "source": "dataset",
+      "checks": {
+        "destination": true,
+        "persona": true,
+        "accessibility_routing": true
+      },
+      "destination": "Goa, India",
+      "personas": [
+        "sunset",
+        "photography"
+      ],
+      "crew": [
+        "Goa Golden-Hour Scout"
+      ],
+      "needs_review": false
+    },
+    {
+      "id": "goa-family-kids",
+      "source": "dataset",
+      "checks": {
+        "destination": true,
+        "persona": true,
+        "accessibility_routing": true
+      },
+      "destination": "Goa, India",
+      "personas": [
+        "family_with_kids",
+        "slow_traveler"
+      ],
+      "crew": [
+        "Goa Family Comfort Advisor",
+        "Low-Effort Access Reviewer"
+      ],
+      "needs_review": true
+    },
+    {
+      "id": "goa-seniors-stairs",
+      "source": "dataset",
+      "checks": {
+        "destination": true,
+        "persona": true,
+        "accessibility_routing": true
+      },
+      "destination": "Goa, India",
+      "personas": [
+        "pilgrimage",
+        "seniors_low_mobility",
+        "accessibility_first"
+      ],
+      "crew": [
+        "Step-Free Goa Access Advisor",
+        "Accessible Temple Pilgrimage Guide"
+      ],
+      "needs_review": true
+    },
+    {
+      "id": "kyoto-slow-cafes",
+      "source": "dataset",
+      "checks": {
+        "destination": true,
+        "persona": true,
+        "accessibility_routing": true
+      },
+      "destination": "Kyoto, Japan",
+      "personas": [
+        "slow_traveler",
+        "food"
+      ],
+      "crew": [
+        "Kyoto Café and Culinary Curator"
+      ],
+      "needs_review": false
+    },
+    {
+      "id": "jaipur-food",
+      "source": "dataset",
+      "checks": {
+        "destination": true,
+        "persona": true,
+        "accessibility_routing": true
+      },
+      "destination": "Jaipur, India",
+      "personas": [
+        "food"
+      ],
+      "crew": [
+        "Jaipur Culinary Scout"
+      ],
+      "needs_review": false
+    },
+    {
+      "id": "bali-beaches",
+      "source": "dataset",
+      "checks": {
+        "destination": true,
+        "persona": true,
+        "accessibility_routing": true
+      },
+      "destination": "Bali, Indonesia",
+      "personas": [
+        "beaches"
+      ],
+      "crew": [
+        "Bali Beach Sunset Scout"
+      ],
+      "needs_review": false
+    },
+    {
+      "id": "pune-trek",
+      "source": "dataset",
+      "checks": {
+        "destination": true,
+        "persona": true,
+        "accessibility_routing": true
+      },
+      "destination": "Pune, India",
+      "personas": [
+        "trek",
+        "nature"
+      ],
+      "crew": [
+        "Pune Fort-and-Trail Route Optimizer"
+      ],
+      "needs_review": false
+    },
+    {
+      "id": "goa-wheelchair",
+      "source": "dataset",
+      "checks": {
+        "destination": true,
+        "persona": true,
+        "accessibility_routing": true
+      },
+      "destination": "Goa, India",
+      "personas": [
+        "seniors_low_mobility",
+        "accessibility_first"
+      ],
+      "crew": [
+        "Goa Step-Free Access Specialist",
+        "Low-Transfer Goa Route Optimizer"
+      ],
+      "needs_review": true
+    }
+  ]
+}
