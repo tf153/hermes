@@ -1,0 +1,54 @@
+
+  ╔══════════════════════════════════════════════════════════╗
+  ║                    📊 Hermes Insights                    ║
+  ║                       Last 30 days                       ║
+  ╚══════════════════════════════════════════════════════════╝
+
+  Period: Jul 12, 2026 — Jul 12, 2026
+
+  📋 Overview
+  ────────────────────────────────────────────────────────
+  Sessions:          57            Messages:        158
+  Tool calls:        34            User messages:   57
+  Input tokens:      324,892       Output tokens:   36,585
+  Total tokens:      448,113
+  Avg msgs/session:  2.8
+
+  🤖 Models Used
+  ────────────────────────────────────────────────────────
+  Model                          Sessions       Tokens
+  gpt-5.6-sol                          57      448,113
+
+  🔧 Top Tools
+  ────────────────────────────────────────────────────────
+  Tool                            Calls        %
+  web_search                         29    85.3%
+  skill_view                          4    11.8%
+  terminal                            1     2.9%
+
+  🧠 Top Skills
+  ────────────────────────────────────────────────────────
+  Skill                          Loads   Edits   Last used
+  trip-planner                       3       0      Jul 12
+  claude-design                      1       0      Jul 12
+  Distinct skills: 2  Loads: 4  Edits: 0
+
+  📅 Activity Patterns
+  ────────────────────────────────────────────────────────
+  Mon                  0
+  Tue                  0
+  Wed                  0
+  Thu                  0
+  Fri                  0
+  Sat                  0
+  Sun  ███████████████ 57
+
+  Peak hours: 10AM (32), 8AM (11), 7AM (8), 9AM (6)
+  Active days: 1
+
+  🏆 Notable Sessions
+  ────────────────────────────────────────────────────────
+  Most messages        13 msgs            (Jul 12, 20260712_101724_)
+  Most tokens          14,854 tokens      (Jul 12, 20260712_072441_)
+  Most tool calls      9 calls            (Jul 12, 20260712_101724_)
+

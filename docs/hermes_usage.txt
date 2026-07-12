@@ -6,10 +6,10 @@ Generated: 2026-07-12
 SUMMARY (the honest, one-line version)
 ------------------------------------------------------------------------------
 We use the Hermes Agent CLI as the reasoning/generation engine behind a
-manager-led multi-agent trip planner. We did NOT use Hermes' native "skills"
-feature, and memory is implemented at the application layer (not Hermes'
-native memory). Each Hermes call is a stateless one-shot; we re-inject the
-remembered context into every prompt ourselves.
+manager-led multi-agent trip planner. We authored and preload a Hermes-native
+SKILL ("trip-planner") into every planning call. Memory is still implemented
+at the application layer (not Hermes' native memory): each Hermes call is a
+stateless one-shot and we re-inject the remembered context into every prompt.
 
 ------------------------------------------------------------------------------
 1. MEMORY
@@ -25,11 +25,18 @@ What we store:
       * updated_at   : timestamp
 
 How it is used:
-  - On each new message we load the session and pass the stored spec into the
-    Hermes prompt (INTAKE / MANAGER prompts take "stored_spec").
+  - On each new message we load the session and pass BOTH the stored spec and
+    the last 5 raw user messages into the Hermes intake prompt (INTAKE prompt
+    takes "stored_spec" + "history"), so wording like "the same trip but
+    slower" resolves against what was actually said earlier.
   - This lets follow-up messages REFINE an existing trip
     (e.g. "make it senior-friendly", "add a day") instead of starting over.
-  - /reset deletes the session file (reset_session) to clear memory.
+  - Refinement works from every surface with the same memory: Telegram
+    follow-up messages, the web landing page (per-browser client id), and the
+    "Edit this trip" box on a finished trip page (POST /api/trip/{id}/refine
+    reuses the trip's session id from meta.json).
+  - /reset (Telegram) or "Start a fresh trip" (web) deletes the session file
+    (reset_session) to clear memory.
 
 Key honesty note:
   - Every `hermes -z` invocation is STATELESS. Hermes does not persist anything
@@ -43,30 +50,50 @@ Files: app/store.py, app/config.py (sessions_dir), app/pipeline.py (load/save)
 ------------------------------------------------------------------------------
 2. SKILLS
 ------------------------------------------------------------------------------
-Hermes-native skills used: NONE.
+Hermes-native skill used: "trip-planner" (authored by us).
 
-We do not define or invoke any Hermes "skill". All agent behavior is driven by
-plain prompt templates in app/agents.py, executed through the Hermes CLI:
+Source of truth (in repo):  skills/trip-planner/SKILL.md
+Installed for the agent at:  ~/.hermes/skills/travel/trip-planner/SKILL.md
+Registered as:               trip-planner | category=travel | source=local | enabled
+                             (verify with `hermes skills list`)
 
-    hermes -z <prompt> --ignore-rules -t search
+What the skill contains:
+  - The travel-desk methodology as a reusable capability: persona-first
+    selection, "never invent places/coords", accessibility as a hard
+    constraint, spoken-narration style, and the strict-JSON output contract.
+  - Three roles matching our crew: Intake Analyst, Itinerary Planner,
+    Accessibility Reviewer (each returns ONLY a JSON object).
 
-  - --ignore-rules : ignore project/agent rules; behavior is prompt-driven only
-  - -t search      : restrict Hermes to the "search" tool only (kept minimal;
-                     in practice our prompts are text transforms and rarely
-                     exercise it)
+How it is loaded (app/hermes_runner.py):
 
-If "skill" in the submission means "a reusable, specialized capability," the
-closest thing we have is our own set of specialist prompt roles (Intake
-Analyst, Itinerary Planner, Accessibility Reviewer, etc.) — but these are
-app-defined prompts, not Hermes skills.
+    hermes -z <prompt> -t skills -s trip-planner
+
+  - -s trip-planner : PRELOAD our skill into the session (its instructions are
+                      injected into the system prompt for every planning call)
+  - -t skills       : keep the skills toolset active (minimal system prompt)
+  - We intentionally DROPPED `--ignore-rules`, because that flag explicitly
+    "skips preloaded skills" — with it on, the skill would never load.
+
+Configurable via app/config.py:
+  - hermes_skill    (default "trip-planner"; set "" to disable and fall back
+                     to prompt-only behaviour)
+  - hermes_toolsets (default "skills")
+
+Verified: a real `hermes -z ... -s trip-planner` call loads the skill and still
+returns clean, schema-correct JSON through app/hermes_runner.run_hermes_json.
+
+Install step (documented in README) to reproduce on a fresh machine:
+    mkdir -p ~/.hermes/skills/travel/trip-planner
+    cp skills/trip-planner/SKILL.md ~/.hermes/skills/travel/trip-planner/
 
 ------------------------------------------------------------------------------
 3. WHAT WE *DID* USE FROM HERMES (for context)
 ------------------------------------------------------------------------------
   - One-shot / non-interactive mode (`hermes -z`) as the LLM engine.
+  - A Hermes-native SKILL ("trip-planner") preloaded via `-s` on every call.
   - Multi-agent orchestration (manager + specialist subagents) built in the
     app on top of multiple independent one-shot Hermes calls (app/agents.py).
-  - Restricted tool set (`-t search`) and rule bypass (`--ignore-rules`).
+  - Minimal toolset (`-t skills`).
   - Timeout / stale-timeout tuning via HERMES_API_CALL_STALE_TIMEOUT.
   - Isolated working directory (data/hermes_workdir).
   - Structured JSON output parsing from Hermes responses (hermes_runner.py).
@@ -77,5 +104,6 @@ app-defined prompts, not Hermes skills.
 ------------------------------------------------------------------------------
   Memory : Application-level persistent per-chat memory (data/sessions/*.json)
            layered around stateless Hermes one-shot calls. Not Hermes-native.
-  Skills : None used.
+  Skills : One Hermes-native skill authored and preloaded — "trip-planner"
+           (skills/trip-planner/SKILL.md), loaded via `hermes -z -s trip-planner`.
 ==============================================================================

@@ -1,0 +1,17 @@
+{
+  "estimated_cost_usd": 0.042205,
+  "cost_status": "estimated",
+  "cost_source": "official_docs_snapshot",
+  "input_tokens": 7217,
+  "output_tokens": 108,
+  "cache_read_tokens": 5760,
+  "cache_write_tokens": 0,
+  "reasoning_tokens": 10,
+  "total_tokens": 13085,
+  "api_calls": 2,
+  "model": "gpt-5.6-sol",
+  "provider": "openai-api",
+  "session_id": "20260712_101947_af8506",
+  "completed": true,
+  "failed": false
+}

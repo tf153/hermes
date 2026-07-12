@@ -1,4 +1,4 @@
-"""FastAPI app: serves trip pages, runs the Telegram bot, cleans up expired trips."""
+"""FastAPI app: landing page, trip pages, the Telegram bot, and trip cleanup."""
 
 import asyncio
 import json
@@ -10,9 +10,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
 
+from app import store
 from app.bot import build_application
 from app.config import settings
+from app.pipeline import build_trip, create_trip
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,6 +101,235 @@ async def health() -> dict:
     }
 
 
+# ------------------------------ landing page ------------------------------
+
+LANDING_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Travel - one message, a whole trip</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2231; --line:#273246; --muted:#8b97ab;
+          --text:#eef2f8; --accent:#ff6f3c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,'Segoe UI',Roboto,sans-serif;
+         color:var(--text); min-height:100vh; display:flex; align-items:center;
+         justify-content:center; padding:24px;
+         background:radial-gradient(1100px 500px at 85% -10%, #2a1a12 0%, transparent 55%),
+                    radial-gradient(900px 500px at -10% 110%, #14203a 0%, transparent 55%),
+                    var(--bg); }
+  .hero { width:min(94vw, 640px); }
+  .kicker { color:var(--accent); font-weight:700; letter-spacing:.09em;
+            font-size:.78rem; text-transform:uppercase; margin-bottom:10px; }
+  h1 { margin:0 0 10px; font-size:clamp(1.7rem, 4.5vw, 2.5rem); line-height:1.15; }
+  p.lead { margin:0 0 26px; color:var(--muted); font-size:1.02rem; line-height:1.55; }
+  form { background:var(--card); border:1px solid var(--line); border-radius:18px;
+         padding:16px; box-shadow:0 18px 60px rgba(0,0,0,.45); }
+  textarea { width:100%; min-height:88px; resize:vertical; background:transparent;
+             border:none; outline:none; color:var(--text); font:inherit;
+             font-size:1rem; line-height:1.5; }
+  textarea::placeholder { color:#5c6a80; }
+  .row { display:flex; align-items:center; gap:12px; margin-top:10px; }
+  .row .spacer { flex:1; }
+  button { background:var(--accent); color:#16100c; border:none; border-radius:12px;
+           padding:12px 26px; font-size:1rem; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:wait; }
+  .status { color:var(--muted); font-size:.85rem; min-height:1.1em; }
+  .status.err { color:#f87171; }
+  .examples { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }
+  .chip { background:var(--card); border:1px solid var(--line); color:var(--muted);
+          border-radius:999px; padding:7px 14px; font-size:.82rem; cursor:pointer; }
+  .chip:hover { border-color:var(--accent); color:var(--text); }
+  .how { display:flex; gap:18px; flex-wrap:wrap; margin-top:30px; }
+  .step { flex:1; min-width:150px; color:var(--muted); font-size:.82rem; line-height:1.45; }
+  .step b { display:block; color:var(--text); font-size:.88rem; margin-bottom:3px; }
+  .step .n { color:var(--accent); font-weight:700; }
+  footer { margin-top:30px; color:var(--muted); font-size:.8rem; }
+  footer a { color:var(--accent); text-decoration:none; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="hero">
+  <div class="kicker">Hermes Travel</div>
+  <h1>One message. A whole trip, planned.</h1>
+  <p class="lead">Say where you're going, who's travelling and what you love.
+  An AI crew researches real places, designs your itinerary and renders a
+  narrated map video - live, on one page.</p>
+
+  <form id="f">
+    <textarea id="msg" maxlength="1000"
+      placeholder="e.g. 2 days in Goa, I'm a sunset chaser and love photography"></textarea>
+    <div class="row">
+      <div class="status" id="status">Follow-up messages refine your last trip.</div>
+      <div class="spacer"></div>
+      <button type="submit" id="go">Plan my trip</button>
+    </div>
+  </form>
+
+  <div class="examples" id="examples"></div>
+
+  <div class="how">
+    <div class="step"><span class="n">1</span> <b>Tell us the trip</b>
+      Destination, days, personas, constraints - plain language.</div>
+    <div class="step"><span class="n">2</span> <b>Watch it build</b>
+      You get a link instantly; the page updates live as agents work.</div>
+    <div class="step"><span class="n">3</span> <b>Get the plan</b>
+      Itinerary with real photos, map and a ~1-min narrated video.</div>
+  </div>
+
+  <footer>Also on Telegram:
+    <a href="https://t.me/hermes_smart_travel_bot">@hermes_smart_travel_bot</a>
+    &nbsp;·&nbsp; <a href="#" id="reset">Start a fresh trip</a>
+  </footer>
+</div>
+
+<script>
+const EXAMPLES = [
+  "2 days in Goa, I'm a sunset chaser and love photography",
+  "Family trip to Jaipur with 2 young kids, nothing too tiring",
+  "Parents coming to Varanasi, no stairs - temples + easy sights",
+  "Solo slow traveller in Pondicherry, just cafes and quiet mornings",
+];
+const ex = document.getElementById("examples");
+ex.innerHTML = EXAMPLES.map(e => `<span class="chip">${e}</span>`).join("");
+ex.querySelectorAll(".chip").forEach((c, i) => c.onclick = () => {
+  document.getElementById("msg").value = EXAMPLES[i];
+  document.getElementById("msg").focus();
+});
+
+// Stable per-browser id so follow-up messages refine the same trip spec.
+let clientId = localStorage.getItem("hermes_client_id");
+if (!clientId) {
+  clientId = String(1e15 + Math.floor(Math.random() * 9e15));
+  localStorage.setItem("hermes_client_id", clientId);
+}
+
+const form = document.getElementById("f");
+const status = document.getElementById("status");
+form.onsubmit = async (ev) => {
+  ev.preventDefault();
+  const message = document.getElementById("msg").value.trim();
+  if (!message) { status.textContent = "Tell me about the trip first."; return; }
+  const btn = document.getElementById("go");
+  btn.disabled = true;
+  status.className = "status";
+  status.textContent = "Starting your trip build\u2026";
+  try {
+    const res = await fetch("/api/trip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, client_id: Number(clientId) }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(
+      typeof data.detail === "string" ? data.detail : "Something went wrong");
+    location.href = data.url;
+  } catch (e) {
+    status.className = "status err";
+    status.textContent = e.message;
+    btn.disabled = false;
+  }
+};
+document.getElementById("msg").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+});
+document.getElementById("reset").onclick = async (e) => {
+  e.preventDefault();
+  await fetch("/api/reset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: Number(clientId) }),
+  });
+  status.className = "status";
+  status.textContent = "Context cleared - tell me about your next trip!";
+};
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def landing() -> HTMLResponse:
+    return HTMLResponse(LANDING_PAGE)
+
+
+class TripRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+    client_id: int = Field(gt=0)
+
+
+class RefineRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+
+
+# web sessions with a build currently running (mirrors the bot's guard)
+_active_web_clients: set[int] = set()
+_web_tasks: set[asyncio.Task] = set()
+
+
+def _launch_web_build(chat_id: int, message: str) -> JSONResponse:
+    """Start a background build for a web request and return the live URL."""
+    message = message.strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="Tell me about the trip first")
+    if chat_id in _active_web_clients:
+        raise HTTPException(
+            status_code=409,
+            detail="I'm still building your previous trip - one moment!",
+        )
+
+    _active_web_clients.add(chat_id)
+    handle = create_trip(chat_id)
+
+    async def _build() -> None:
+        try:
+            await build_trip(handle.trip_id, chat_id, message)
+        except Exception:
+            logger.exception("web trip build failed for %s", handle.trip_id)
+        finally:
+            _active_web_clients.discard(chat_id)
+
+    task = asyncio.create_task(_build())
+    _web_tasks.add(task)
+    task.add_done_callback(_web_tasks.discard)
+
+    return JSONResponse({"trip_id": handle.trip_id, "url": handle.url})
+
+
+@app.post("/api/trip")
+async def start_trip(req: TripRequest) -> JSONResponse:
+    """Web equivalent of a Telegram message: instant URL, background build."""
+    return _launch_web_build(req.client_id, req.message)
+
+
+@app.post("/api/trip/{trip_id}/refine")
+async def refine_trip(trip_id: str, req: RefineRequest) -> JSONResponse:
+    """Edit an existing trip: reuse its session (memory) and build a new one."""
+    if not trip_id.isalnum():
+        raise HTTPException(status_code=404, detail="Trip not found")
+    meta_path = settings.trips_dir / trip_id / "meta.json"
+    if not meta_path.exists():
+        raise HTTPException(status_code=404, detail="Trip not found")
+    try:
+        chat_id = int(json.loads(meta_path.read_text(encoding="utf-8"))["chat_id"])
+    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return _launch_web_build(chat_id, req.message)
+
+
+class ResetRequest(BaseModel):
+    client_id: int = Field(gt=0)
+
+
+@app.post("/api/reset")
+async def reset_web_session(req: ResetRequest) -> JSONResponse:
+    """Clear the stored spec for a web client (like /reset in Telegram)."""
+    store.reset_session(req.client_id)
+    return JSONResponse({"ok": True})
+
+
 @app.get("/video/{trip_id}.mp4")
 async def get_video(trip_id: str) -> FileResponse:
     if not trip_id.isalnum():
@@ -175,7 +407,7 @@ async function poll() {
     if (s.error) {
       const el = document.getElementById("err");
       el.style.display = "block";
-      el.textContent = "Build failed: " + s.error + " - ask the bot to try again.";
+      el.textContent = "Build failed: " + s.error + " - send a new request to try again.";
     }
   } catch (e) { /* transient network error; keep polling */ }
 }

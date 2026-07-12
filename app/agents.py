@@ -128,6 +128,10 @@ Today's date is {today}.
 Stored trip spec from earlier messages in this chat (null if none):
 {stored_spec}
 
+Recent messages from this traveller, oldest first ([] if none). Use them to
+resolve references like "the same trip", "add a day there" or "like last time":
+{history}
+
 New message from the user:
 "{message}"
 
@@ -367,12 +371,17 @@ def format_specialist_guidance(results: list[dict]) -> str:
 
 
 async def intake_analyst(
-    message: str, stored_spec: dict | None, today: str, default_dest: str
+    message: str,
+    stored_spec: dict | None,
+    today: str,
+    default_dest: str,
+    history: list[str] | None = None,
 ) -> dict:
     """Turn the traveller's message + stored context into a structured spec."""
     prompt = INTAKE_PROMPT.format(
         today=today,
         stored_spec=json.dumps(stored_spec, ensure_ascii=False),
+        history=json.dumps(history or [], ensure_ascii=False),
         message=message.replace('"', "'"),
         default_dest=default_dest,
     )

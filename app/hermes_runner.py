@@ -16,24 +16,30 @@ class HermesError(RuntimeError):
 
 
 async def run_hermes(prompt: str, timeout: float | None = None) -> str:
-    """Run `hermes -z <prompt> --ignore-rules` and return the response text."""
+    """Run `hermes -z <prompt>` with the trip-planner skill preloaded.
+
+    We preload our Hermes-native `trip-planner` skill (`-s`), which carries the
+    travel-desk methodology (persona-fit selection, accessibility rules,
+    narration style, strict-JSON contract). Note: `--ignore-rules` explicitly
+    skips preloaded skills, so it is intentionally NOT passed here.
+    """
     timeout = timeout or settings.hermes_timeout_seconds
-    logger.info("hermes -z (%d chars prompt)", len(prompt))
+    logger.info("hermes -z (%d chars prompt, skill=%s)", len(prompt), settings.hermes_skill)
     env = {
         **os.environ,
         # Long single-shot generations (full HTML page) exceed hermes' default
         # 90s non-streaming stale timeout; give the API call more headroom.
         "HERMES_API_CALL_STALE_TIMEOUT": str(int(timeout * 0.75)),
     }
+    cmd = [settings.hermes_bin, "-z", prompt]
+    # Minimal toolset keeps the system prompt small; "skills" keeps the skill
+    # mechanism active so the preloaded skill is honoured.
+    if settings.hermes_toolsets:
+        cmd += ["-t", settings.hermes_toolsets]
+    if settings.hermes_skill:
+        cmd += ["-s", settings.hermes_skill]
     proc = await asyncio.create_subprocess_exec(
-        settings.hermes_bin,
-        "-z",
-        prompt,
-        "--ignore-rules",
-        # Minimal toolset: our prompts are pure text transforms; the full
-        # tool suite just bloats the system prompt and slows every call.
-        "-t",
-        "search",
+        *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=settings.hermes_workdir,

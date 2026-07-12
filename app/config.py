@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     hermes_timeout_seconds: int = 420
     # Model label shown in the run trace (provider is not scored; display only).
     hermes_model: str = "gpt-5.6-sol"
+    # Hermes-native skill preloaded into every planning call (-s <name>). It
+    # holds the travel-desk methodology (see skills/trip-planner/SKILL.md).
+    # Set to "" to disable preloading and fall back to prompt-only behaviour.
+    hermes_skill: str = "trip-planner"
+    # Toolset enabled per call. "skills" keeps the skills mechanism active so
+    # the preloaded skill is honoured while keeping the system prompt small.
+    hermes_toolsets: str = "skills"
 
     # Per-token cost estimate for the observability trace. Real token counts are
     # not exposed by `hermes -z`, so the trace estimates tokens at ~4 chars each

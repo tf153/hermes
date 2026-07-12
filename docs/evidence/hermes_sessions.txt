@@ -1,0 +1,22 @@
+Preview                                            Last Active   Src    ID
+───────────────────────────────────────────────────────────────────────────────────────────────
+Using the trip-planner skill Accessibility Revie   just now      cli    20260712_101947_af8506
+You are the Trip Director, the manager of an AI    1m ago        cli    20260712_101843_6c1386
+You are the Intake Analyst on a travel desk. Tod   1m ago        cli    20260712_101835_83958c
+You are the Trip Director, the manager of an AI    2m ago        cli    20260712_101828_5ea270
+You are the Intake Analyst on a travel desk. Tod   2m ago        cli    20260712_101824_ea452c
+You are the Trip Director, the manager of an AI    2m ago        cli    20260712_101816_717e7f
+You are the Intake Analyst on a travel desk. Tod   2m ago        cli    20260712_101812_ac0172
+You are the Trip Director, the manager of an AI    2m ago        cli    20260712_101807_cdd5fd
+You are the Intake Analyst on a travel desk. Tod   2m ago        cli    20260712_101801_55be36
+You are the Trip Director, the manager of an AI    2m ago        cli    20260712_101756_dfcf4e
+You are the Intake Analyst on a travel desk. Tod   2m ago        cli    20260712_101751_e184db
+You are the Trip Director, the manager of an AI    2m ago        cli    20260712_101745_3ae317
+You are the Intake Analyst on a travel desk. Tod   2m ago        cli    20260712_101738_bce440
+You are the Trip Director, the manager of an AI    2m ago        cli    20260712_101732_8663ff
+You are the Intake Analyst on a travel desk. Tod   3m ago        cli    20260712_101727_6cfba3
+You are the Itinerary Planner on a travel desk f   2m ago        cli    20260712_101724_b84c18
+You are the Trip Director, the manager of an AI    3m ago        cli    20260712_101722_04aa9a
+You are the Intake Analyst on a travel desk. Tod   3m ago        cli    20260712_101718_68d977
+You are the Accessibility Reviewer on a travel d   3m ago        cli    20260712_101707_7afa56
+You are the Trip Director, the manager of an AI    3m ago        cli    20260712_101700_535622

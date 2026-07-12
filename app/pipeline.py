@@ -195,6 +195,24 @@ TRIP_PAGE = """<!DOCTYPE html>
                 border-radius:50%; width:28px; height:28px; display:flex;
                 align-items:center; justify-content:center; font-weight:700;
                 font-size:13px; box-shadow:0 2px 6px rgba(0,0,0,.5); }
+  .refine { margin-top:22px; background:var(--card); border:1px solid var(--line);
+            border-radius:14px; padding:14px; }
+  .refine h2 { margin:0 0 4px; font-size:1rem; }
+  .refine p.hint { margin:0 0 10px; color:var(--muted); font-size:.82rem; }
+  .refine textarea { width:100%; min-height:64px; resize:vertical; background:transparent;
+                     border:1px solid var(--line); border-radius:10px; padding:10px;
+                     outline:none; color:var(--text); font:inherit; font-size:.92rem; }
+  .refine textarea:focus { border-color:var(--accent); }
+  .refine .row { display:flex; align-items:center; gap:10px; margin-top:10px; }
+  .refine .rstatus { color:var(--muted); font-size:.8rem; flex:1; min-height:1.1em; }
+  .refine .rstatus.err { color:#f87171; }
+  .refine button { background:var(--accent); color:#16100c; border:none;
+                   border-radius:10px; padding:10px 20px; font-weight:700;
+                   font-size:.92rem; cursor:pointer; }
+  .refine button:disabled { opacity:.55; cursor:wait; }
+  .suggest { display:flex; flex-wrap:wrap; gap:7px; margin-top:10px; }
+  .suggest .chip { cursor:pointer; }
+  .suggest .chip:hover { border-color:var(--accent); color:var(--text); }
   footer { margin-top:34px; color:var(--muted); font-size:.8rem; text-align:center; }
 </style>
 </head>
@@ -212,6 +230,19 @@ TRIP_PAGE = """<!DOCTYPE html>
       <div class="links">
         <a href="__VIDEO_URL__" download>Download video</a>
         <a href="/runs/__TRIP_ID__">See how the agents built this &rsaquo;</a>
+      </div>
+      <div class="refine">
+        <h2>Edit this trip</h2>
+        <p class="hint">Tell the crew what to change - it remembers this trip.</p>
+        <form id="rf">
+          <textarea id="rmsg" maxlength="1000"
+            placeholder="e.g. make it senior-friendly, add a beach day, slower pace"></textarea>
+          <div class="row">
+            <div class="rstatus" id="rstatus"></div>
+            <button type="submit" id="rgo">Rebuild trip</button>
+          </div>
+        </form>
+        <div class="suggest" id="suggest"></div>
       </div>
     </div>
     <div>
@@ -290,6 +321,50 @@ if (withCoords.length) {
 } else {
   document.getElementById("map").style.display = "none";
 }
+
+// edit box: a follow-up message rebuilds the trip using its stored memory
+const tripId = "__TRIP_ID__";
+const SUGGESTIONS = [
+  "Make it senior-friendly", "Add one more day", "More food stops",
+  "Slower pace, fewer stops", "Add sunset spots",
+];
+const sug = document.getElementById("suggest");
+sug.innerHTML = SUGGESTIONS.map(s => `<span class="chip">${s}</span>`).join("");
+sug.querySelectorAll(".chip").forEach((c, i) => c.onclick = () => {
+  const t = document.getElementById("rmsg");
+  t.value = SUGGESTIONS[i];
+  t.focus();
+});
+
+const rform = document.getElementById("rf");
+const rstatus = document.getElementById("rstatus");
+rform.onsubmit = async (ev) => {
+  ev.preventDefault();
+  const message = document.getElementById("rmsg").value.trim();
+  if (!message) { rstatus.textContent = "Tell me what to change first."; return; }
+  const btn = document.getElementById("rgo");
+  btn.disabled = true;
+  rstatus.className = "rstatus";
+  rstatus.textContent = "Rebuilding your trip\u2026";
+  try {
+    const res = await fetch(`/api/trip/${tripId}/refine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(
+      typeof data.detail === "string" ? data.detail : "Something went wrong");
+    location.href = data.url;
+  } catch (e) {
+    rstatus.className = "rstatus err";
+    rstatus.textContent = e.message;
+    btn.disabled = false;
+  }
+};
+document.getElementById("rmsg").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); rform.requestSubmit(); }
+});
 </script>
 </body>
 </html>
@@ -331,6 +406,9 @@ async def _build_trip_inner(
 ) -> TripResult:
     session = store.load_session(chat_id)
     stored_spec = session.get("spec")
+    # Memory: the last few raw messages go into the intake prompt so wording
+    # like "same trip but slower" resolves against what was actually said.
+    history = (session.get("history") or [])[-5:]
     trace.start_trace(trip_id)
 
     # The Trip Director (manager) wraps the whole run; every specialist span
@@ -343,6 +421,7 @@ async def _build_trip_inner(
             stored_spec,
             datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             settings.default_destination,
+            history=history,
         )
         logger.info("intake spec: %s", spec)
         destination = (spec.get("destination") or settings.default_destination).strip()
@@ -363,7 +442,8 @@ async def _build_trip_inner(
         by_name = {p["name"]: p for p in places if p.get("name")}
 
         days = spec.get("days") or 2
-        n_stops = max(4, min(7, days * 3))
+        per_day = {"relaxed": 2, "packed": 4}.get(spec.get("pace"), 3)
+        n_stops = max(3, min(7, days * per_day))
         compact = _compact_places(places)
 
         # Trip Director composes a request-specific crew of persona specialists
