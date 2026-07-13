@@ -1,11 +1,12 @@
 # Hermes Travel Backend
 
-Telegram -> Hermes Agent trip planner for any destination. A user tells the
-bot where they're going and who's travelling (personas like sunset chaser,
-family with kids, seniors, foodies) and the backend designs a personalized
-itinerary and renders it as a ~1-minute narrated map video. The bot replies
-instantly with a live trip page URL; the page shows build progress and turns
-into the video player when ready.
+Hermes Agent trip planner for any destination, reachable from **Telegram** or
+the **web landing page**. A user says where they're going and who's travelling
+(personas like sunset chaser, family with kids, seniors, foodies) and the
+backend designs a personalized itinerary and renders it as a ~1-minute
+narrated map video. The reply is instant: a live trip page URL that shows
+build progress and turns into the full trip page (video + interactive map +
+itinerary + edit box) when ready.
 
 If no destination is named, `DEFAULT_DESTINATION` (Goa, India) is used.
 
@@ -15,11 +16,12 @@ The build is run by a small **agent crew** - a manager that plans the work and
 delegates to specialists - not a fixed script:
 
 ```
-Telegram user
-  -> python-telegram-bot (long polling, no webhook needed)
-  -> trip created instantly -> bot replies with PUBLIC_BASE_URL/trip/{id}
+Telegram user (long polling)          Web user (landing page / trip edit box)
+  -> bot.py handle_message               -> POST /api/trip | /api/trip/{id}/refine
+  -> trip created instantly -> reply with PUBLIC_BASE_URL/trip/{id}
   -> background build, orchestrated by the Trip Director (manager):
        1. Intake Analyst  : message + stored per-chat spec -> structured spec
+                            (guardrail: rejects anything that isn't trip planning)
        2. Place Researcher: live Linkup search for real places w/ coords,
                             ratings, review quotes (cached in data/places/)
        3. Trip Director   : composes a crew for THIS traveller - picks the
@@ -45,7 +47,26 @@ traveller, so the roster in the trace differs run to run - a plain beach trip
 spawns none of them and skips the review; a "parents can't climb stairs, temples
 only" trip spawns access + pilgrimage specialists and often triggers a revision.
 Per-chat context lives in `data/sessions/{chat_id}.json`, so follow-up messages
-like "make it senior-friendly" refine the trip. `/reset` clears it.
+like "make it senior-friendly" refine the trip. `/reset` (Telegram) or
+"Start a fresh trip" (web) clears it. Web browsers get a stable `client_id` in
+localStorage that acts like a Telegram chat id, and the "Edit this trip" box on
+every finished trip page rebuilds with the same memory.
+
+### Guardrails and abuse protection
+
+- **Trip-only filter**: the Intake Analyst classifies every message first; the
+  build aborts before any place search or video render when the message is not
+  about planning/refining a trip (coding help, homework, jailbreaks, etc.).
+  Rejections are captured to `eval/captured.jsonl` (reason `off_topic`).
+- **Rate limiting** (`app/ratelimit.py`): sliding-window caps on starting
+  builds - per user (`RATE_LIMIT_REQUESTS`/`RATE_LIMIT_WINDOW_MINUTES`,
+  default 5/hour) and global (`RATE_LIMIT_GLOBAL_PER_HOUR`, default 30/hour).
+  Web gets HTTP 429 + Retry-After; Telegram gets a friendly retry message.
+- **One build at a time** per chat/client; duplicates get "one moment" without
+  consuming rate-limit quota.
+- **Photo caching**: photo URLs fetched per stop are written back into the
+  destination's places cache (`data/places/{slug}.json`), so rebuilds do not
+  re-hit SerpAPI.
 
 ### Hermes skill
 
@@ -142,9 +163,15 @@ cp .env.example .env
 Installed as a systemd service on this droplet:
 
 ```bash
-systemctl restart hermes-travel.service   # port 443 with TLS (behind Cloudflare)
+systemctl restart hermes-travel.service   # restart (picks up .env and code changes)
+systemctl status hermes-travel.service    # is it up?
 journalctl -u hermes-travel -f            # logs
+curl -sk https://localhost/health         # {"status":"ok", ...} + which keys are configured
 ```
+
+The service listens on port 443 with a self-signed TLS cert (Cloudflare "Full"
+mode in front). Any `.env` change (e.g. a new SerpAPI or Linkup key) requires a
+restart to take effect.
 
 Or manually:
 
@@ -160,11 +187,12 @@ rm -f data/places/*.json   # refetched via Linkup on the next trip build
 
 ## Try it
 
-Message the bot (@hermes_smart_travel_bot):
+Message the bot (@hermes_smart_travel_bot) or open https://www.rahuljoshi.info
+and type into the landing page:
 
 > 2 days in Goa, I'm a sunset chaser and love photography
 
-Then refine:
+Then refine (reply in Telegram, or use the "Edit this trip" box on the page):
 
 > My parents are joining - keep it easy, no stairs
 
@@ -179,10 +207,11 @@ Then refine:
 | `app/store.py`         | Per-chat context store under `data/sessions/`               |
 | `app/linkup.py`        | Linkup structured search for places (cached per destination)|
 | `app/photos.py`        | SerpAPI Google Maps photos + place-data fallback            |
+| `app/ratelimit.py`     | Sliding-window rate limits (per user + global)              |
 | `app/pipeline.py`      | create_trip (instant URL) + build_trip (runs the crew)      |
 | `app/video.py`         | Map video renderer (staticmap + Pillow + ffmpeg)            |
 | `app/tts.py`           | ElevenLabs narration audio                                  |
 | `app/bot.py`           | Telegram handlers (`/start`, `/reset`, free text)           |
-| `app/main.py`          | FastAPI app + trip pages + run viewer + bot + TTL cleanup   |
+| `app/main.py`          | FastAPI app: landing page, trip pages, web API, run viewer, bot, TTL cleanup |
 | `skills/trip-planner/` | Hermes-native skill (`SKILL.md`) preloaded on every call    |
 | `eval/`                | Named eval set + runner (`run_evals.py`), closed-loop capture (`capture.py`), per-version results |

@@ -12,10 +12,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from app import store
+from app import ratelimit, store
 from app.bot import build_application
 from app.config import settings
-from app.pipeline import build_trip, create_trip
+from app.pipeline import NotTripRequest, build_trip, create_trip
 
 logging.basicConfig(
     level=logging.INFO,
@@ -280,12 +280,23 @@ def _launch_web_build(chat_id: int, message: str) -> JSONResponse:
             detail="I'm still building your previous trip - one moment!",
         )
 
+    allowed, retry_after = ratelimit.check(chat_id)
+    if not allowed:
+        minutes = max(1, retry_after // 60)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Trip-building limit reached. Try again in about {minutes} min.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     _active_web_clients.add(chat_id)
     handle = create_trip(chat_id)
 
     async def _build() -> None:
         try:
             await build_trip(handle.trip_id, chat_id, message)
+        except NotTripRequest:
+            pass  # already surfaced on the live page via status.json
         except Exception:
             logger.exception("web trip build failed for %s", handle.trip_id)
         finally:

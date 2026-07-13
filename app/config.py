@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     cost_input_per_mtok: float = 2.5
     cost_output_per_mtok: float = 10.0
 
+    # Abuse guards: sliding-window rate limits on starting new trip builds.
+    # A build is expensive (several Hermes calls + a video render), so the
+    # caps are deliberately small.
+    rate_limit_requests: int = 5  # builds per user per window
+    rate_limit_window_minutes: int = 60
+    rate_limit_global_per_hour: int = 30  # all users combined
+
     data_dir: Path = BASE_DIR / "data"
 
     @property

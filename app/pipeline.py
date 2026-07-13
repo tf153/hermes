@@ -33,6 +33,16 @@ class TripResult:
     summary: str
 
 
+class NotTripRequest(Exception):
+    """Raised when the intake guardrail decides the message is off-topic."""
+
+
+OFF_TOPIC_MESSAGE = (
+    "I can only help with planning trips - tell me where you're going, "
+    "who's travelling and what you love."
+)
+
+
 def _compact_places(places: list[dict]) -> list[dict]:
     """Trim the place records to what the model needs (keeps the prompt small)."""
     compact = []
@@ -393,6 +403,9 @@ async def build_trip(
     """Run the full build for an already-created trip, updating its live status."""
     try:
         return await _build_trip_inner(trip_id, chat_id, message, progress)
+    except NotTripRequest:
+        set_status(trip_id, error=OFF_TOPIC_MESSAGE, done=False)
+        raise
     except Exception as exc:
         set_status(trip_id, error=str(exc)[:300], done=False)
         raise
@@ -424,6 +437,15 @@ async def _build_trip_inner(
             history=history,
         )
         logger.info("intake spec: %s", spec)
+
+        # Guardrail: Hermes only plans trips. Anything else stops here, before
+        # any place search, specialist crew or video render is spent on it.
+        if spec.get("is_trip_request") is False:
+            reason = spec.get("rejection_reason") or "not a trip-planning request"
+            logger.info("rejected off-topic request for chat %s: %s", chat_id, reason)
+            capture.capture_case(message, reason="off_topic", extra={"detail": reason})
+            raise NotTripRequest(reason)
+
         destination = (spec.get("destination") or settings.default_destination).strip()
         set_status(
             trip_id,
@@ -525,6 +547,9 @@ async def _build_trip_inner(
             "Place Researcher", "Fetch a real photo per stop", kind="tool"
         ) as sp:
             await photos.attach_photos(resolved_stops, destination)
+            # Write photos back into the places cache: rebuilds of the same
+            # trip (or trips reusing these places) then skip SerpAPI entirely.
+            linkup.save_thumbnails(destination, resolved_stops)
             sp.note(stops=len(resolved_stops))
 
         plan["stops"] = resolved_stops

@@ -11,10 +11,10 @@ from telegram.ext import (
     filters,
 )
 
-from app import store
+from app import ratelimit, store
 from app.config import settings
 from app.hermes_runner import HermesError
-from app.pipeline import build_trip, create_trip
+from app.pipeline import OFF_TOPIC_MESSAGE, NotTripRequest, build_trip, create_trip
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,15 @@ async def _start_trip(
         )
         return
 
+    allowed, retry_after = ratelimit.check(chat_id)
+    if not allowed:
+        minutes = max(1, retry_after // 60)
+        await update.message.reply_text(
+            f"You've hit the trip-building limit for now. "
+            f"Please try again in about {minutes} min."
+        )
+        return
+
     _active_chats.add(chat_id)
 
     # The link goes out immediately; the page shows the build live and turns
@@ -97,6 +106,8 @@ async def _build_and_deliver(
                 read_timeout=120,
                 write_timeout=120,
             )
+    except NotTripRequest:
+        await update.message.reply_text(OFF_TOPIC_MESSAGE)
     except HermesError as exc:
         logger.exception("pipeline failed for chat %s", chat_id)
         await update.message.reply_text(

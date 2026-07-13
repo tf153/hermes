@@ -219,6 +219,28 @@ async def fetch_places(destination: str, force: bool = False) -> list[dict]:
     return places
 
 
+def save_thumbnails(destination: str, stops: list[dict]) -> None:
+    """Persist fetched photo URLs into the destination's places cache.
+
+    Photo lookups cost a SerpAPI search each; writing them back means a
+    rebuild of the same trip (or any trip reusing these places) is free.
+    """
+    cache = settings.places_dir / f"{_slug(destination)}.json"
+    try:
+        places = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    thumbs = {s.get("name"): s.get("thumbnail") for s in stops if s.get("thumbnail")}
+    changed = False
+    for place in places:
+        thumb = thumbs.get(place.get("name"))
+        if thumb and not place.get("thumbnail"):
+            place["thumbnail"] = thumb
+            changed = True
+    if changed:
+        cache.write_text(json.dumps(places, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def _seed_places() -> list[dict]:
     """Hand-seeded Goa spots so the default demo works without any API key."""
     return [
